@@ -1,6 +1,5 @@
 require('dotenv').config();
 
-// Konfigurasi Kamailio dari environment variables
 const kamailioConfig = {
   domain: process.env.KAMAILIO_DOMAIN || 'voip-server.example.com',
   wsPort: process.env.KAMAILIO_WS_PORT || '8088',
