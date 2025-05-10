@@ -55,7 +55,15 @@ export function CallHistory({ calls, detailed = false }: CallHistoryProps) {
     return type === 'audio' ? 'Panggilan Suara' : 'Panggilan Video';
   };
 
+  // TODO: Dalam implementasi sebenarnya, sebaiknya memeriksa ketersediaan nomor
+  // dan memvalidasi melalui backend sebelum membuat panggilan
   const handleCallBack = (number: string, type: CallType) => {
+    // Validasi nomor telepon sebelum memulai panggilan
+    if (!number.trim()) {
+      console.error('Nomor telepon tidak valid');
+      return;
+    }
+    
     makeCall(number, type);
   };
 

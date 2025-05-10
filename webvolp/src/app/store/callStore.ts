@@ -1,15 +1,16 @@
 import { create } from 'zustand';
 import { Call, CallState, CallStatus, CallType } from '../types';
 
-// Mengganti uuid karena tidak bisa ditemukan, gunakan Date.now() untuk ID yang unik
 export const useCallStore = create<CallState>((set, get) => ({
   currentCall: null,
   callHistory: [],
   isDialPadOpen: false,
 
   makeCall: (phoneNumber: string, type: CallType) => {
+    // TODO: Dalam implementasi sebenarnya, objek Call tidak seharusnya dibuat
+    // sebelum koneksi ke backend berhasil. Ini hanya untuk keperluan UI saat ini.
     const newCall: Call = {
-      id: Date.now().toString(), // Menggunakan timestamp sebagai id unik
+      id: Date.now().toString(),
       type,
       phoneNumber,
       direction: 'outgoing',
@@ -24,19 +25,8 @@ export const useCallStore = create<CallState>((set, get) => ({
       callHistory: [newCall, ...state.callHistory]
     }));
 
-    // Simulate call ringing after 1 second
-    setTimeout(() => {
-      if (get().currentCall?.id === newCall.id) {
-        get().updateCallStatus('ringing');
-      }
-    }, 1000);
-
-    // Simulate call connecting after 3 seconds
-    setTimeout(() => {
-      if (get().currentCall?.id === newCall.id) {
-        get().updateCallStatus('active');
-      }
-    }, 3000);
+    // TODO: Backend seharusnya mengontrol keseluruhan status panggilan
+    // Tidak ada simulasi panggilan di sini
   },
 
   endCall: () => {
@@ -62,6 +52,8 @@ export const useCallStore = create<CallState>((set, get) => ({
           call.id === updatedCall.id ? updatedCall : call
         )
       }));
+
+      // TODO: Backend seharusnya mengontrol keseluruhan status panggilan
     }
   },
 
@@ -76,6 +68,8 @@ export const useCallStore = create<CallState>((set, get) => ({
           startTime: new Date(),
         }
       }));
+
+      // TODO: Backend seharusnya mengontrol keseluruhan status panggilan
     }
   },
 
@@ -97,6 +91,8 @@ export const useCallStore = create<CallState>((set, get) => ({
           call.id === updatedCall.id ? updatedCall : call
         )
       }));
+
+      // TODO: Backend seharusnya mengontrol keseluruhan status panggilan
     }
   },
 
@@ -110,7 +106,6 @@ export const useCallStore = create<CallState>((set, get) => ({
         ...state.currentCall,
         status,
       } : null,
-      // Update this call's status in history as well
       callHistory: state.currentCall ? state.callHistory.map(call => 
         call.id === state.currentCall?.id ? { ...call, status } : call
       ) : state.callHistory

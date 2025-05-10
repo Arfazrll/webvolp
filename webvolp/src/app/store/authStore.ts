@@ -1,23 +1,9 @@
 import { create } from 'zustand';
 import { AuthState, User } from '../types';
 
-// Mock authentication function (replace with actual Kamailio authentication)
+
 const authenticateWithKamailio = async (phoneNumber: string): Promise<User> => {
-  // Simulate API call
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      // Simulate successful login
-      if (phoneNumber && phoneNumber.length >= 10) {
-        resolve({
-          phoneNumber,
-          name: `User ${phoneNumber.slice(-4)}`,
-          avatar: '/images/avatar.png',
-        });
-      } else {
-        reject(new Error('Nomor telepon tidak valid'));
-      }
-    }, 1000);
-  });
+  throw new Error('Fungsi belum diimplementasikan');
 };
 
 export const useAuthStore = create<AuthState>((set) => ({
@@ -29,10 +15,10 @@ export const useAuthStore = create<AuthState>((set) => ({
   login: async (phoneNumber: string) => {
     set({ isLoading: true, error: null });
     try {
+      // TODO: Implementasikan autentikasi sesungguhnya, termasuk hashng password jika diperlukan
       const user = await authenticateWithKamailio(phoneNumber);
       
-      // Save user to localStorage for persistence
-      localStorage.setItem('user', JSON.stringify(user));
+      localStorage.setItem('auth_token', JSON.stringify({ token: 'PLACEHOLDER_TOKEN', phoneNumber }));
       
       set({ user, isLoggedIn: true, isLoading: false });
     } catch (error) {
@@ -44,7 +30,8 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: () => {
-    localStorage.removeItem('user');
+    localStorage.removeItem('auth_token');
     set({ user: null, isLoggedIn: false });
+    
   },
 }));

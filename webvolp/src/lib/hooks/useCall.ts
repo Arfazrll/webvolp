@@ -34,18 +34,17 @@ export function useCall() {
       console.log('Initializing Kamailio service with user:', user.phoneNumber);
       
       try {
-        // Setup Kamailio dengan kredensial pengguna
+        // TODO: Implementasikan koneksi asli ke Kamailio
         kamailioService.initialize(
           { 
             phoneNumber: user.phoneNumber, 
-            password: 'password123' // Dalam aplikasi nyata, gunakan kredensial yang aman
+            password: '' // TODO: Implementasikan manajemen kredensial yang aman
           },
           // Status callback
           (status) => {
             console.log('Call status changed:', status);
             updateCallStatus(status);
             
-            // Tampilkan notifikasi untuk perubahan status tertentu
             if (status === 'failed') {
               toast.error('Panggilan gagal. Periksa koneksi jaringan Anda.');
             }
@@ -53,11 +52,9 @@ export function useCall() {
           // Incoming call callback
           (phoneNumber, type) => {
             console.log('Incoming call from:', phoneNumber, 'type:', type);
-            
-            // Notifikasi panggilan masuk
             toast.info(`Panggilan ${type === 'video' ? 'video' : 'suara'} masuk dari ${phoneNumber}`);
             
-            // Buat panggilan masuk baru di store
+            // TODO: Verifikasi dengan backend bahwa panggilan masuk valid
             const newCall = {
               id: Date.now().toString(),
               type,
@@ -72,10 +69,9 @@ export function useCall() {
               callHistory: [newCall, ...callHistory]
             });
           },
-          // Connection callback (parameter ke-4 yang hilang)
+          // Connection callback
           (connectionStatus) => {
             console.log('Connection status changed:', connectionStatus);
-            // Handle connection status changes here
             if (connectionStatus === false) {
               toast.error('Koneksi VoIP terputus');
             } else if (connectionStatus === true) {
@@ -100,37 +96,6 @@ export function useCall() {
       }
     };
   }, [user, isInitialized, callHistory, updateCallStatus]);
-
-  // Debugging untuk video elements
-  useEffect(() => {
-    const debugVideos = () => {
-      if (localVideoRef.current) {
-        console.log('useCall - Local video element status:', {
-          id: localVideoRef.current.id,
-          hasStream: !!localVideoRef.current.srcObject,
-          width: localVideoRef.current.width,
-          height: localVideoRef.current.height
-        });
-      }
-      
-      if (remoteVideoRef.current) {
-        console.log('useCall - Remote video element status:', {
-          id: remoteVideoRef.current.id,
-          hasStream: !!remoteVideoRef.current.srcObject,
-          width: remoteVideoRef.current.width,
-          height: remoteVideoRef.current.height
-        });
-      }
-    };
-    
-    // Debug saat komponnen mounting
-    debugVideos();
-    
-    // Debug setiap 10 detik
-    const interval = setInterval(debugVideos, 10000);
-    
-    return () => clearInterval(interval);
-  }, []);
 
   // Metode untuk membuat panggilan
   const makeCall = async (phoneNumber: string, type: CallType = 'audio') => {
@@ -160,26 +125,18 @@ export function useCall() {
         }
       }
       
-      // Update store first
+      // TODO: Pendekatan yang benar adalah untuk menginisialisasi koneksi ke backend DULU,
+      // kemudian setelah berhasil, baru update state UI
+      // Untuk sekarang, update store dahulu
       storeStartCall(phoneNumber, type);
       
       if (isInitialized) {
-        // Lakukan panggilan menggunakan Kamailio
+        // TODO: Implementasikan koneksi ke backend untuk panggilan
         await kamailioService.makeCall(phoneNumber, type);
         
         // Set initial media state
         setAudioEnabled(true);
         setVideoEnabled(type === 'video');
-        
-        // Log WebRTC debug info
-        if (type === 'video') {
-          console.log('WebRTC video call initiated with:', {
-            service: 'initialized',
-            videoEnabled: true,
-            localVideo: localVideoRef.current ? 'available' : 'not set',
-            remoteVideo: remoteVideoRef.current ? 'available' : 'not set'
-          });
-        }
       } else {
         throw new Error('Layanan VoIP belum diinisialisasi');
       }
@@ -190,10 +147,8 @@ export function useCall() {
       // Update status menjadi failed
       updateCallStatus('failed');
       
-      // Akhiri panggilan di store
-      setTimeout(() => {
-        storeEndCall();
-      }, 1000);
+      // Akhiri panggilan di store - tidak perlu setTimeout
+      storeEndCall();
     }
   };
 
@@ -225,26 +180,18 @@ export function useCall() {
         }
       }
       
-      // Update store
+      // TODO: Pendekatan yang benar adalah menjawab panggilan di backend DULU
+      // kemudian setelah berhasil, baru update state UI
+      // Untuk sekarang, update store dahulu
       storeAnswerCall();
       
       if (isInitialized) {
-        // Jawab panggilan menggunakan Kamailio
+        // TODO: Implementasikan koneksi ke backend untuk menjawab panggilan
         await kamailioService.answerCall(currentCall.type);
         
         // Set initial media state
         setAudioEnabled(true);
         setVideoEnabled(currentCall.type === 'video');
-        
-        // Log WebRTC debug info
-        if (currentCall.type === 'video') {
-          console.log('WebRTC video call answered with:', {
-            service: 'initialized',
-            videoEnabled: true,
-            localVideo: localVideoRef.current ? 'available' : 'not set',
-            remoteVideo: remoteVideoRef.current ? 'available' : 'not set'
-          });
-        }
       } else {
         throw new Error('Layanan VoIP belum diinisialisasi');
       }
@@ -255,10 +202,8 @@ export function useCall() {
       // Update status menjadi failed
       updateCallStatus('failed');
       
-      // Akhiri panggilan di store
-      setTimeout(() => {
-        storeEndCall();
-      }, 1000);
+      // Akhiri panggilan di store - tidak perlu setTimeout
+      storeEndCall();
     }
   };
 
@@ -272,11 +217,13 @@ export function useCall() {
     try {
       console.log('Ending call with', currentCall.phoneNumber);
       
-      // Akhiri panggilan di store
+      // TODO: Pendekatan yang benar adalah mengakhiri panggilan di backend DULU,
+      // kemudian setelah berhasil, baru update state UI
+      // Untuk sekarang, update store dahulu
       storeEndCall();
       
       if (isInitialized) {
-        // Akhiri panggilan menggunakan Kamailio
+        // TODO: Implementasikan koneksi ke backend untuk mengakhiri panggilan
         kamailioService.endCall();
       }
       
@@ -299,11 +246,13 @@ export function useCall() {
     try {
       console.log('Rejecting call from', currentCall.phoneNumber);
       
-      // Tolak panggilan di store
+      // TODO: Pendekatan yang benar adalah menolak panggilan di backend DULU,
+      // kemudian setelah berhasil, baru update state UI
+      // Untuk sekarang, update store dahulu
       storeRejectCall();
       
       if (isInitialized) {
-        // Tolak panggilan menggunakan Kamailio
+        // TODO: Implementasikan koneksi ke backend untuk menolak panggilan
         kamailioService.endCall();
       }
       

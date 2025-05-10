@@ -64,7 +64,8 @@ export function formatDate(date: Date): string {
 }
 
 /**
- * Format Indonesian month name for displayed date
+ * Format month name for displayed date
+ * TODO: Dalam implementasi sebenarnya, gunakan i18n untuk format yang lebih fleksibel
  */
 export function formatMonthShort(month: number): string {
   const months = [
@@ -90,31 +91,27 @@ export function formatShortDate(date?: Date): string {
 }
 
 /**
- * Format phone number (adds spaces for readability)
+ * Format phone number for display
+ * TODO: Dalam implementasi sebenarnya, gunakan library seperti libphonenumber-js
+ * untuk memformat nomor telepon sesuai standar internasional
  */
 export function formatPhoneNumber(phoneNumber: string): string {
-  // Simple formatting for Indonesian numbers
-  // Example: 081234567890 -> 0812 3456 7890
   if (!phoneNumber) return '';
   
-  if (phoneNumber.startsWith('+62')) {
-    // Handle +62 format
-    const cleaned = phoneNumber.slice(3); // Remove +62
-    return `+62 ${cleaned.slice(0, 3)} ${cleaned.slice(3, 7)} ${cleaned.slice(7)}`;
-  } else if (phoneNumber.startsWith('62')) {
-    // Handle 62 format (without +)
-    const cleaned = phoneNumber.slice(2); // Remove 62
-    return `62 ${cleaned.slice(0, 3)} ${cleaned.slice(3, 7)} ${cleaned.slice(7)}`;
-  } else if (phoneNumber.startsWith('0')) {
-    // Handle 0 format (standard Indonesian format)
-    return `${phoneNumber.slice(0, 4)} ${phoneNumber.slice(4, 8)} ${phoneNumber.slice(8)}`;
+  // Implementasi generik yang tidak mengasumsikan format tertentu
+  try {
+    // Strip out non-digit characters
+    const cleaned = phoneNumber.replace(/\D/g, '');
+    
+    // Format dasar: kelompokkan per 4 digit
+    const chunks = [];
+    for (let i = 0; i < cleaned.length; i += 4) {
+      chunks.push(cleaned.slice(i, i + 4));
+    }
+    
+    return chunks.join(' ');
+  } catch (error) {
+    // Fallback jika format gagal
+    return phoneNumber;
   }
-  
-  // If no specific format is detected, just add spaces every 4 digits
-  const chunks = [];
-  for (let i = 0; i < phoneNumber.length; i += 4) {
-    chunks.push(phoneNumber.slice(i, i + 4));
-  }
-  
-  return chunks.join(' ');
 }

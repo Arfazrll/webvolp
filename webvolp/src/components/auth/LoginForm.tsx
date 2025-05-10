@@ -14,16 +14,14 @@ export function LoginForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // Simple validation
+    // Basic validation
     if (!phoneNumber.trim()) {
       setError('Nomor telepon tidak boleh kosong');
       return;
     }
     
-    if (phoneNumber.length < 10) {
-      setError('Nomor telepon harus minimal 10 digit');
-      return;
-    }
+    // TODO: Dalam implementasi sebenarnya, validasi nomor telepon seharusnya
+    // dilakukan oleh backend, bukan hardcoded di frontend
     
     try {
       await login(phoneNumber);
@@ -49,7 +47,7 @@ export function LoginForm() {
         <Input
           type="tel"
           label="Nomor Telepon"
-          placeholder="Contoh: 081234567890"
+          placeholder="Masukkan nomor telepon"
           value={phoneNumber}
           onChange={(e) => {
             setPhoneNumber(e.target.value);
@@ -70,7 +68,7 @@ export function LoginForm() {
 
       <div className="mt-6 text-center text-sm text-secondary-500">
         <p>
-          Sistem ini terhubung dengan server VoIP Kamailio menggunakan protokol UDP.
+          Sistem ini terhubung dengan server VoIP Kamailio menggunakan protokol WebRTC.
         </p>
       </div>
     </div>

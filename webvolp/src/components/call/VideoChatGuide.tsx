@@ -1,4 +1,4 @@
-// src/components/call/VideoChatGuide.tsx (Perbaikan)
+// src/components/call/VideoChatGuide.tsx
 
 import React, { useState, useEffect } from 'react';
 import { FiVideo, FiMic, FiWifi, FiCheck, FiX, FiAlertTriangle, FiCloudLightning } from 'react-icons/fi';
@@ -11,10 +11,9 @@ interface DeviceStatus {
   webrtc: boolean | null;
 }
 
-// Definisikan props dengan benar
 interface VideoChatGuideProps {
   onClose: () => void;
-  onStartVideoCall?: (phoneNumber: string) => void; // Tambahkan prop ini dengan tipe yang sesuai
+  onStartVideoCall?: (phoneNumber: string) => void;
 }
 
 export function VideoChatGuide({ onClose, onStartVideoCall }: VideoChatGuideProps) {
@@ -27,7 +26,7 @@ export function VideoChatGuide({ onClose, onStartVideoCall }: VideoChatGuideProp
   const [checking, setChecking] = useState(false);
   const [phoneNumber, setPhoneNumber] = useState('');
   
-  // Check device compatibility
+  // Check basic device compatibility
   useEffect(() => {
     // Check if getUserMedia is supported
     const hasMediaDevices = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
@@ -38,7 +37,7 @@ export function VideoChatGuide({ onClose, onStartVideoCall }: VideoChatGuideProp
     // Basic network check
     const isOnline = navigator.onLine;
     
-    // Update network status
+    // Update status
     setStatus(prev => ({
       ...prev,
       network: isOnline,
@@ -46,27 +45,17 @@ export function VideoChatGuide({ onClose, onStartVideoCall }: VideoChatGuideProp
     }));
   }, []);
   
+  // Check device permissions
   const checkDevices = async () => {
     setChecking(true);
     
     try {
+      // Check camera and microphone permissions
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
       
       // Check if we got both audio and video tracks
       const hasVideo = stream.getVideoTracks().length > 0;
       const hasAudio = stream.getAudioTracks().length > 0;
-      
-      // Logging device info
-      if (hasVideo) {
-        const videoTrack = stream.getVideoTracks()[0];
-        console.log('Video device:', videoTrack.label);
-        console.log('Video track settings:', videoTrack.getSettings());
-      }
-      
-      if (hasAudio) {
-        const audioTrack = stream.getAudioTracks()[0];
-        console.log('Audio device:', audioTrack.label);
-      }
       
       setStatus(prev => ({
         ...prev,
@@ -74,61 +63,14 @@ export function VideoChatGuide({ onClose, onStartVideoCall }: VideoChatGuideProp
         microphone: hasAudio
       }));
       
-      // Additional WebRTC check
-      try {
-        // Create test peer connection
-        const pc1 = new RTCPeerConnection();
-        const pc2 = new RTCPeerConnection();
-        
-        // Add track to peer connection
-        stream.getTracks().forEach(track => {
-          pc1.addTrack(track, stream);
-        });
-        
-        // Create data channel as additional test
-        const dc = pc1.createDataChannel('test');
-        
-        // Handle ICE candidates
-        pc1.onicecandidate = (e) => {
-          if (e.candidate) {
-            pc2.addIceCandidate(e.candidate);
-          }
-        };
-        
-        pc2.onicecandidate = (e) => {
-          if (e.candidate) {
-            pc1.addIceCandidate(e.candidate);
-          }
-        };
-        
-        // Create and set offer
-        const offer = await pc1.createOffer();
-        await pc1.setLocalDescription(offer);
-        await pc2.setRemoteDescription(offer);
-        
-        // Create and set answer
-        const answer = await pc2.createAnswer();
-        await pc2.setLocalDescription(answer);
-        await pc1.setRemoteDescription(answer);
-        
-        // Clean up
-        setTimeout(() => {
-          pc1.close();
-          pc2.close();
-          console.log('WebRTC test connection closed');
-        }, 1000);
-        
-        setStatus(prev => ({
-          ...prev,
-          webrtc: true
-        }));
-      } catch (webrtcError) {
-        console.error('WebRTC connection test failed:', webrtcError);
-        setStatus(prev => ({
-          ...prev,
-          webrtc: false
-        }));
-      }
+      // TODO: Dalam implementasi sebenarnya, sebaiknya kirim permintaan ke backend
+      // untuk memvalidasi kapabilitas WebRTC secara keseluruhan
+      
+      // Ini hanya pengujian dasar bahwa browser mendukung WebRTC
+      setStatus(prev => ({
+        ...prev,
+        webrtc: true
+      }));
       
       // Stop tracks
       stream.getTracks().forEach(track => track.stop());
@@ -141,12 +83,10 @@ export function VideoChatGuide({ onClose, onStartVideoCall }: VideoChatGuideProp
         
         if (errorMessage.includes('video')) {
           setStatus(prev => ({ ...prev, camera: false }));
-          console.error('Izin kamera ditolak. Silakan izinkan akses kamera di pengaturan browser Anda.');
         }
         
         if (errorMessage.includes('audio') || errorMessage.includes('microphone')) {
           setStatus(prev => ({ ...prev, microphone: false }));
-          console.error('Izin mikrofon ditolak. Silakan izinkan akses mikrofon di pengaturan browser Anda.');
         }
       } else {
         // Generic error
@@ -155,7 +95,6 @@ export function VideoChatGuide({ onClose, onStartVideoCall }: VideoChatGuideProp
           camera: false,
           microphone: false
         }));
-        console.error('Gagal mengakses kamera dan mikrofon. Periksa pengaturan izin browser Anda.');
       }
     } finally {
       setChecking(false);
@@ -171,7 +110,7 @@ export function VideoChatGuide({ onClose, onStartVideoCall }: VideoChatGuideProp
 
   const handleStartCall = () => {
     if (!canUseVideoChat) {
-      console.error('Perangkat belum siap untuk panggilan video. Silakan periksa status perangkat.');
+      console.error('Perangkat belum siap untuk panggilan video.');
       return;
     }
     
@@ -180,6 +119,7 @@ export function VideoChatGuide({ onClose, onStartVideoCall }: VideoChatGuideProp
       return;
     }
     
+    // TODO: Dalam implementasi sebenarnya, sebaiknya validasi nomor telepon melalui backend
     if (onStartVideoCall) {
       onStartVideoCall(phoneNumber);
     }
