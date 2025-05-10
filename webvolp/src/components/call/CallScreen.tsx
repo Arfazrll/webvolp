@@ -1,3 +1,5 @@
+// src/components/call/CallScreen.tsx - Perbaikan untuk video call
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { FiPhone, FiPhoneOff, FiMic, FiMicOff, FiVideo, FiVideoOff, FiVolume2, FiVolumeX } from 'react-icons/fi';
 import { Button } from '../../components/ui/Button';
@@ -33,14 +35,27 @@ export function CallScreen({ call }: CallScreenProps) {
   // Memoize setVideoRefs callback untuk mencegah masalah rendering berulang
   const updateVideoRefs = useCallback(() => {
     if (localVideoRef.current && remoteVideoRef.current) {
-      console.log('Updating video refs');
+      console.log('CallScreen: Updating video refs');
       setVideoRefs(localVideoRef.current, remoteVideoRef.current);
     }
   }, [setVideoRefs]);
 
-  // Set video refs saat komponen mount
+  // Set video refs saat komponen mount dan refs berubah
   useEffect(() => {
+    console.log('CallScreen: Setting up video refs');
     updateVideoRefs();
+    
+    // Request camera permission early if it's a video call
+    if (activeCall?.type === 'video') {
+      navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        .then(stream => {
+          console.log('Camera and mic permission granted');
+          stream.getTracks().forEach(track => track.stop()); // Release devices after check
+        })
+        .catch(err => {
+          console.error('Camera/mic permission denied:', err);
+        });
+    }
     
     // Update video refs saat video elements berubah
     const localVideo = localVideoRef.current;
@@ -49,10 +64,11 @@ export function CallScreen({ call }: CallScreenProps) {
     return () => {
       // Cleanup video refs saat unmount
       if (localVideo || remoteVideo) {
+        console.log('CallScreen: Cleaning up video refs');
         setVideoRefs(null, null);
       }
     };
-  }, [updateVideoRefs, setVideoRefs]);
+  }, [updateVideoRefs, setVideoRefs, activeCall?.type]);
 
   // Jalankan timer selama panggilan aktif
   useEffect(() => {
@@ -71,6 +87,41 @@ export function CallScreen({ call }: CallScreenProps) {
     // Clean up interval saat komponen unmount atau panggilan berakhir
     return () => {
       if (interval) clearInterval(interval);
+    };
+  }, [activeCall?.status]);
+
+  // Tambahkan video element monitoring
+  useEffect(() => {
+    const checkVideoElements = () => {
+      if (localVideoRef.current) {
+        console.log('Local video element properties:', {
+          width: localVideoRef.current.videoWidth,
+          height: localVideoRef.current.videoHeight,
+          hasStream: !!localVideoRef.current.srcObject,
+          playing: !localVideoRef.current.paused,
+          readyState: localVideoRef.current.readyState
+        });
+      }
+      
+      if (remoteVideoRef.current) {
+        console.log('Remote video element properties:', {
+          width: remoteVideoRef.current.videoWidth,
+          height: remoteVideoRef.current.videoHeight, 
+          hasStream: !!remoteVideoRef.current.srcObject,
+          playing: !remoteVideoRef.current.paused,
+          readyState: remoteVideoRef.current.readyState
+        });
+      }
+    };
+    
+    // Check awal
+    checkVideoElements();
+    
+    // Check berkala
+    const monitorInterval = setInterval(checkVideoElements, 5000);
+    
+    return () => {
+      clearInterval(monitorInterval);
     };
   }, [activeCall?.status]);
 
@@ -128,6 +179,9 @@ export function CallScreen({ call }: CallScreenProps) {
             autoPlay
             playsInline
             className="w-full h-full object-cover"
+            id="remote-video"
+            controls={false}
+            muted={speakerEnabled ? false : true}
           />
           
           {/* Local Video (Picture-in-picture) */}
@@ -138,6 +192,8 @@ export function CallScreen({ call }: CallScreenProps) {
               playsInline
               muted
               className="w-full h-full object-cover"
+              id="local-video"
+              controls={false}
             />
           </div>
           
@@ -223,8 +279,8 @@ export function CallScreen({ call }: CallScreenProps) {
         
         {/* Video elements masih dirender tapi hidden, untuk mempersiapkan switch ke video */}
         <div className="hidden">
-          <video ref={localVideoRef} autoPlay playsInline muted />
-          <video ref={remoteVideoRef} autoPlay playsInline />
+          <video ref={localVideoRef} id="local-video-hidden" autoPlay playsInline muted />
+          <video ref={remoteVideoRef} id="remote-video-hidden" autoPlay playsInline />
         </div>
         
         {/* Kontrol Panggilan */}

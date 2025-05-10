@@ -1,47 +1,59 @@
 import * as JsSIP from 'jssip';
 import { KamailioConfig, KamailioCredentials, CallType, CallStatus, MediaStreamState } from '../../app/types';
 
-// Definisi tipe untuk event JsSIP yang lebih akurat
-interface RTCSessionEvent {
-  session: JsSIPSession;
-  originator?: string;
-  request?: any;
+// Fungsi untuk memprioritaskan codec video tertentu untuk meningkatkan kompatibilitas
+function preferCodec(sdp: string, codecName: string, codecType: 'audio' | 'video'): string {
+  const sections = sdp.split('\r\nm=');
+  const header = sections[0];
+  const rest = sections.slice(1);
+  
+  const mediaSection = rest.find(section => section.startsWith(codecType));
+  if (!mediaSection) return sdp;
+  
+  const lines = mediaSection.split('\r\n');
+  const formatLine = lines.find(line => line.startsWith('a=rtpmap:') && line.includes(codecName));
+  if (!formatLine) return sdp;
+  
+  const codec = formatLine.split(':')[1].split(' ')[0];
+  
+  // Reorder payload types to prefer selected codec
+  const formatLine0 = lines.find(line => line.startsWith('m='));
+  if (!formatLine0) return sdp;
+  
+  const parts = formatLine0.split(' ');
+  const payloadTypes = parts.slice(3);
+  
+  // Remove current codec and put it first
+  const index = payloadTypes.indexOf(codec);
+  if (index === -1) return sdp;
+  
+  payloadTypes.splice(index, 1);
+  payloadTypes.unshift(codec);
+  
+  // Update the m= line
+  parts.splice(3, parts.length - 3, ...payloadTypes);
+  lines[0] = parts.join(' ');
+  
+  // Rebuild the section
+  const newMediaSection = lines.join('\r\n');
+  
+  // Rebuild the SDP
+  const newSections = rest.map(section => 
+    section.startsWith(codecType) ? newMediaSection : section
+  );
+  
+  return `${header}\r\nm=${newSections.join('\r\nm=')}`;
 }
 
-// Interface yang lebih lengkap untuk session JsSIP
-interface JsSIPSession {
-  direction: string;
-  remote_identity: {
-    uri: {
-      user: string;
-    };
-    display_name?: string;
-  };
-  request: {
-    body: string;
-  };
-  terminate: (options?: any) => void;
-  answer: (options: JsSIPSessionOptions) => void;
-  on: (event: string, callback: (...args: any[]) => void) => void;
-  connection: RTCPeerConnection;
-  isEnded: () => boolean;
-  isEstablished: () => boolean;
-}
-
-interface JsSIPSessionOptions {
-  mediaConstraints: {
-    audio: boolean;
-    video: boolean | MediaTrackConstraints;
-  };
-  pcConfig: {
-    iceServers: RTCIceServer[];
-    iceTransportPolicy?: RTCIceTransportPolicy;
-  };
-}
+// Logger untuk debugging WebRTC
+const logWebRTC = (message: string, data?: any) => {
+  const timestamp = new Date().toISOString().substr(11, 12);
+  console.log(`[WebRTC ${timestamp}] ${message}`, data || '');
+};
 
 class KamailioService {
-  private ua: JsSIP.UA | null = null;
-  private session: JsSIPSession | null = null;
+  private ua: any = null;
+  private session: any = null;
   private config: KamailioConfig;
   private onCallStatusChange: (status: CallStatus) => void = () => {};
   private onIncomingCall: (phoneNumber: string, type: CallType) => void = () => {};
@@ -54,6 +66,7 @@ class KamailioService {
   };
   private localVideoElement: HTMLVideoElement | null = null;
   private remoteVideoElement: HTMLVideoElement | null = null;
+  private isVideoCallReady: boolean = false;
 
   constructor() {
     // Default konfigurasi (seharusnya diambil dari environment variables)
@@ -63,9 +76,19 @@ class KamailioService {
       websocket: process.env.NEXT_PUBLIC_KAMAILIO_WS || 'wss://voip-server.example.com:8088/ws',
       iceServers: [
         { urls: ['stun:stun.l.google.com:19302'] },
-        { urls: ['stun:stun1.l.google.com:19302'] }
+        { urls: ['stun:stun1.l.google.com:19302'] },
+        // Tambahkan TURN server jika tersedia untuk melewati NAT/firewall
+        // Contoh TURN server publik (gunakan server anda sendiri untuk produksi)
+        { urls: 'turn:numb.viagenie.ca', username: 'webrtc@live.com', credential: 'muazkh' }
       ]
     };
+
+    logWebRTC('KamailioService initialized with config', {
+      domain: this.config.domain,
+      port: this.config.port,
+      websocket: this.config.websocket,
+      iceServers: this.config.iceServers.length
+    });
   }
 
   initialize(
@@ -76,158 +99,319 @@ class KamailioService {
     this.onCallStatusChange = statusCallback;
     this.onIncomingCall = incomingCallCallback;
 
-    // Konfigurasi socket
-    const socket = new JsSIP.WebSocketInterface(this.config.websocket);
-    
-    // Debug options untuk development
-    const debug = {
-      debug: {
-        level: 3,  // Dari 0 (tidak ada debug) sampai 3 (verbose)
-      }
-    };
-    
-    const configuration = {
-      sockets: [socket],
-      uri: `sip:${credentials.phoneNumber}@${this.config.domain}`,
-      password: credentials.password,
-      display_name: credentials.phoneNumber,
-      ...debug
-    };
-
-    // Inisialisasi UA (User Agent)
-    this.ua = new JsSIP.UA(configuration);
-
-    // Register event handlers
-    this.ua.on('connected', () => {
-      console.log('Connected to WebSocket');
-    });
-    
-    this.ua.on('disconnected', () => {
-      console.log('Disconnected from WebSocket');
-    });
-    
-    this.ua.on('registered', () => {
-      console.log('Registered with SIP server');
-    });
-    
-    this.ua.on('unregistered', () => {
-      console.log('Unregistered from SIP server');
-    });
-    
-    this.ua.on('registrationFailed', (cause) => {
-      console.error('Registration failed:', cause);
-    });
-
-    // Handle incoming calls dengan implementasi yang lebih baik
-    this.ua.on('newRTCSession', (event: RTCSessionEvent) => {
-      console.log('New RTC Session', event);
+    try {
+      logWebRTC('Initializing JsSIP');
       
-      const session = event.session;
-      
-      if (session.direction === 'incoming') {
-        // Tentukan tipe panggilan berdasarkan SDP
-        const callType: CallType = 
-          session.request && session.request.body && 
-          session.request.body.indexOf('m=video') > -1 ? 'video' : 'audio';
-        
-        // Dapatkan nomor penelepon
-        const from = session.remote_identity?.uri?.user || '';
-        
-        // Notifikasi panggilan masuk
-        this.onIncomingCall(from, callType);
-        this.session = session;
-        
-        // Setup call listeners
-        this.setupCallListeners(session);
+      // Deteksi WebRTC support
+      if (!window.RTCPeerConnection) {
+        throw new Error('Browser tidak mendukung WebRTC. Gunakan Chrome, Firefox, atau Edge terbaru.');
       }
-    });
+      
+      // Deteksi getUserMedia support
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Browser tidak mendukung akses kamera/mikrofon. Gunakan browser yang lebih baru.');
+      }
+  
+      // Konfigurasi socket
+      const socket = new JsSIP.WebSocketInterface(this.config.websocket);
+      
+      // Debug options untuk development
+      const debug = {
+        debug: {
+          level: 3,  // Dari 0 (tidak ada debug) sampai 3 (verbose)
+        }
+      };
+      
+      const configuration = {
+        sockets: [socket],
+        uri: `sip:${credentials.phoneNumber}@${this.config.domain}`,
+        password: credentials.password,
+        display_name: credentials.phoneNumber,
+        register_expires: 300, // 5 menit
+        session_timers: true,
+        use_preloaded_route: false,
+        ...debug
+      };
 
-    // Start the user agent
-    this.ua.start();
+      logWebRTC('Creating JsSIP User Agent with config', {
+        uri: configuration.uri,
+        register_expires: configuration.register_expires,
+        session_timers: configuration.session_timers
+      });
+
+      // Inisialisasi UA (User Agent)
+      this.ua = new JsSIP.UA(configuration);
+
+      // Register event handlers
+      this.ua.on('connected', () => {
+        logWebRTC('Connected to SIP WebSocket');
+      });
+      
+      this.ua.on('disconnected', () => {
+        logWebRTC('Disconnected from SIP WebSocket');
+      });
+      
+      this.ua.on('registered', () => {
+        logWebRTC('Registered with SIP server');
+      });
+      
+      this.ua.on('unregistered', () => {
+        logWebRTC('Unregistered from SIP server');
+      });
+      
+      this.ua.on('registrationFailed', (cause: any) => {
+        logWebRTC('Registration failed', cause);
+      });
+
+      // Handle incoming calls
+      this.ua.on('newRTCSession', (event: any) => {
+        logWebRTC('New RTC Session received', {
+          direction: event.session.direction,
+          hasRequest: !!event.session.request,
+          hasBody: event.session.request ? !!event.session.request.body : false
+        });
+        
+        const session = event.session;
+        
+        if (session.direction === 'incoming') {
+          // Tentukan tipe panggilan berdasarkan SDP
+          const sdpBody = session.request?.body || '';
+          const hasVideo = sdpBody.indexOf('m=video') > -1;
+          const callType: CallType = hasVideo ? 'video' : 'audio';
+          
+          logWebRTC(`Incoming ${callType} call detected from SDP`, { hasVideo });
+          
+          // Dapatkan nomor penelepon
+          const from = session.remote_identity?.uri?.user || '';
+          
+          // Notifikasi panggilan masuk
+          this.onIncomingCall(from, callType);
+          this.session = session;
+          
+          // Setup call listeners
+          this.setupCallListeners(session);
+        }
+      });
+
+      // Start the user agent
+      this.ua.start();
+      logWebRTC('JsSIP User Agent started');
+      return true;
+    } catch (error) {
+      logWebRTC('Error initializing JsSIP', error);
+      return false;
+    }
   }
 
   // Metode untuk mengatur elemen video
   setVideoElements(localVideo: HTMLVideoElement | null, remoteVideo: HTMLVideoElement | null) {
+    logWebRTC('Setting video elements', { 
+      localVideo: localVideo ? `id=${localVideo.id || 'unset'}` : 'null', 
+      remoteVideo: remoteVideo ? `id=${remoteVideo.id || 'unset'}` : 'null' 
+    });
+    
     this.localVideoElement = localVideo;
     this.remoteVideoElement = remoteVideo;
     
-    // Jika session sudah aktif, perbarui elemen video
-    if (this.session && this.session.isEstablished() && this.mediaState.remoteStream) {
+    // Konfigurasi video elements dengan atribut yang benar
+    if (this.localVideoElement) {
+      this.localVideoElement.autoplay = true;
+      this.localVideoElement.muted = true;
+      this.localVideoElement.playsInline = true;
+    }
+    
+    if (this.remoteVideoElement) {
+      this.remoteVideoElement.autoplay = true;
+      this.remoteVideoElement.playsInline = true;
+    }
+    
+    // Jika session sudah aktif, perbarui elemen video - gunakan null untuk menghindari undefined
+    if (this.session && this.session.isEstablished && typeof this.session.isEstablished === 'function' && 
+        this.session.isEstablished() && this.mediaState.remoteStream) {
       if (this.remoteVideoElement) {
-        this.remoteVideoElement.srcObject = this.mediaState.remoteStream;
+        logWebRTC('Attaching existing remote stream to video element');
+        this.remoteVideoElement.srcObject = this.mediaState.remoteStream || null;
       }
     }
     
     if (this.mediaState.localStream && this.localVideoElement) {
-      this.localVideoElement.srcObject = this.mediaState.localStream;
+      logWebRTC('Attaching existing local stream to video element');
+      this.localVideoElement.srcObject = this.mediaState.localStream || null;
     }
+    
+    this.isVideoCallReady = !!(this.localVideoElement && this.remoteVideoElement);
+    logWebRTC('Video call readiness set to', this.isVideoCallReady);
   }
 
-  // Implementasi yang lebih baik untuk mengatur WebRTC event listeners
-  private setupMediaListeners(session: JsSIPSession) {
+  // Implementasi yang lebih baik untuk setupMediaListeners
+  private setupMediaListeners(session: any) {
     if (!session.connection) {
-      console.error('No RTCPeerConnection available');
+      logWebRTC('No RTCPeerConnection available for media listeners');
       return;
     }
     
-    console.log('Setting up media listeners for RTCPeerConnection');
+    logWebRTC('Setting up media listeners for RTCPeerConnection');
 
     // Handle remote tracks
-    session.connection.ontrack = (event) => {
-      console.log('Remote track received', event);
+    session.connection.ontrack = (event: any) => {
+      logWebRTC('Remote track received', {
+        kind: event.track.kind,
+        label: event.track.label,
+        enabled: event.track.enabled,
+        muted: event.track.muted,
+        readyState: event.track.readyState,
+        hasStreams: !!event.streams && event.streams.length > 0
+      });
       
       if (event.streams && event.streams[0]) {
-        this.mediaState.remoteStream = event.streams[0];
+        const stream = event.streams[0];
         
-        console.log('Setting remote stream to video element');
-        if (this.remoteVideoElement) {
-          this.remoteVideoElement.srcObject = this.mediaState.remoteStream;
-          this.remoteVideoElement.play().catch(err => {
-            console.error('Failed to play remote video', err);
-          });
+        logWebRTC('Got remote stream with tracks', 
+          stream.getTracks().map((t: any) => ({
+            kind: t.kind,
+            label: t.label,
+            enabled: t.enabled,
+            muted: t.muted,
+            readyState: t.readyState
+          }))
+        );
+        
+        this.mediaState.remoteStream = stream;
+        
+        // Tambahkan event listener untuk track ended
+        event.track.onended = () => {
+          logWebRTC(`Remote ${event.track.kind} track ended`);
+        };
+        
+        // Tambahkan event listener untuk track mute/unmute
+        event.track.onmute = () => {
+          logWebRTC(`Remote ${event.track.kind} track muted`);
+        };
+        
+        event.track.onunmute = () => {
+          logWebRTC(`Remote ${event.track.kind} track unmuted`);
+        };
+        
+        // Verifikasi bahwa track aktif
+        if (!event.track.enabled) {
+          logWebRTC(`Remote ${event.track.kind} track is disabled, enabling it`);
+          event.track.enabled = true;
         }
+        
+        // Siapkan video element
+        if (this.remoteVideoElement) {
+          logWebRTC('Setting remote stream to video element');
+          
+          // Gunakan null sebagai fallback untuk menghindari undefined
+          this.remoteVideoElement.srcObject = this.mediaState.remoteStream || null;
+          
+          // Mainkan video dengan penanganan error yang lebih baik
+          this.remoteVideoElement.play()
+            .then(() => logWebRTC('Remote video playback started'))
+            .catch(err => {
+              logWebRTC('Failed to play remote video', err);
+              
+              // Coba lagi dengan user interaction atau autoplay muted
+              logWebRTC('Attempting to play muted as fallback');
+              if (this.remoteVideoElement) {
+                this.remoteVideoElement.muted = true;
+                this.remoteVideoElement.play()
+                  .then(() => logWebRTC('Remote video playback started (muted)'))
+                  .catch(err2 => logWebRTC('Still failed to play remote video even muted', err2));
+              }
+            });
+        } else {
+          logWebRTC('No remote video element available to display remote stream');
+        }
+      } else {
+        logWebRTC('Received track but no stream available');
       }
     };
 
     // Handle connection state changes
     session.connection.onconnectionstatechange = () => {
-      console.log('Connection state changed:', session.connection.connectionState);
+      logWebRTC('Connection state changed', session.connection.connectionState);
+      
+      // Jika koneksi terputus, coba sambungkan kembali atau akhiri panggilan
+      if (session.connection.connectionState === 'failed') {
+        logWebRTC('Connection failed, ending call');
+        this.onCallStatusChange('failed');
+        this.endCall();
+      }
     };
     
     // Handle ICE connection state changes
     session.connection.oniceconnectionstatechange = () => {
-      console.log('ICE connection state changed:', session.connection.iceConnectionState);
+      logWebRTC('ICE connection state changed', session.connection.iceConnectionState);
       
       // Jika koneksi terputus
       if (session.connection.iceConnectionState === 'disconnected' || 
           session.connection.iceConnectionState === 'failed') {
-        console.warn('ICE connection failed or disconnected');
+        logWebRTC('ICE connection failed or disconnected');
+        
+        // Jika gagal selama lebih dari 5 detik, akhiri panggilan
+        if (session.connection.iceConnectionState === 'failed') {
+          logWebRTC('ICE connection failed permanently, ending call');
+          this.onCallStatusChange('failed');
+          setTimeout(() => this.endCall(), 5000);
+        }
       }
     };
     
     // Handle ICE gathering state
     session.connection.onicegatheringstatechange = () => {
-      console.log('ICE gathering state:', session.connection.iceGatheringState);
+      logWebRTC('ICE gathering state', session.connection.iceGatheringState);
     };
     
     // Log ICE candidates untuk debug
-    session.connection.onicecandidate = (event) => {
+    session.connection.onicecandidate = (event: any) => {
       if (event.candidate) {
-        console.log('New ICE candidate:', event.candidate.candidate);
+        logWebRTC('New ICE candidate', {
+          candidate: event.candidate.candidate,
+          sdpMid: event.candidate.sdpMid,
+          sdpMLineIndex: event.candidate.sdpMLineIndex
+        });
       } else {
-        console.log('All ICE candidates gathered');
+        logWebRTC('All ICE candidates gathered');
       }
+    };
+    
+    // Handle negotiation needed - penting untuk video
+    session.connection.onnegotiationneeded = () => {
+      logWebRTC('Negotiation needed for peer connection');
+    };
+    
+    // Log data channel events if they occur
+    session.connection.ondatachannel = (event: any) => {
+      logWebRTC('Data channel received', event.channel.label);
     };
   }
 
   // Implementasi yang lebih baik untuk getUserMedia
   private async getUserMedia(isVideo: boolean): Promise<MediaStream | null> {
     try {
-      // Batasan media yang lebih spesifik untuk video
+      // Coba minta izin media dulu dengan batasan minimal
+      logWebRTC(`Checking ${isVideo ? 'video' : 'audio'} permission`);
+      try {
+        const checkStream = await navigator.mediaDevices.getUserMedia({
+          audio: true, 
+          video: isVideo
+        });
+        
+        // Berhenti streaming cek untuk membebaskan perangkat
+        checkStream.getTracks().forEach(track => track.stop());
+        logWebRTC('Permission granted for media devices');
+      } catch (permError) {
+        logWebRTC('Media permission denied', permError);
+        throw new Error(`Izin untuk mengakses ${isVideo ? 'kamera' : 'mikrofon'} ditolak. Silakan berikan izin dan coba lagi.`);
+      }
+      
+      // Batasan media yang lebih adaptif untuk video
       const videoConstraints: MediaTrackConstraints = {
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        frameRate: { ideal: 30 }
+        // Mulai dengan resolusi lebih rendah untuk kompatibilitas yang lebih baik
+        width: { ideal: 640, min: 320 },
+        height: { ideal: 480, min: 240 },
+        frameRate: { ideal: 24, min: 15 }
       };
       
       const constraints = {
@@ -239,58 +423,86 @@ class KamailioService {
         video: isVideo ? videoConstraints : false
       };
       
-      console.log('Requesting user media with constraints:', constraints);
+      logWebRTC('Requesting user media with constraints', constraints);
       
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       this.mediaState.localStream = stream;
       
-      console.log('Got local stream with tracks:', stream.getTracks().map(t => `${t.kind}: ${t.label}`));
+      logWebRTC('Got local stream with tracks', 
+        stream.getTracks().map(t => ({
+          kind: t.kind,
+          label: t.label,
+          enabled: t.enabled,
+          muted: t.muted,
+          readyState: t.readyState
+        }))
+      );
       
       // Tampilkan di local video element jika tersedia
       if (this.localVideoElement && stream) {
-        console.log('Setting local stream to video element');
-        this.localVideoElement.srcObject = stream;
+        logWebRTC('Setting local stream to video element');
+        // Gunakan null sebagai fallback untuk menghindari undefined
+        this.localVideoElement.srcObject = stream || null;
         this.localVideoElement.muted = true; // Mute lokal untuk mencegah feedback
-        this.localVideoElement.play().catch(err => {
-          console.error('Failed to play local video', err);
-        });
+        
+        try {
+          await this.localVideoElement.play();
+          logWebRTC('Local video playback started');
+        } catch (err) {
+          logWebRTC('Failed to play local video', err);
+        }
+      } else if (isVideo) {
+        logWebRTC('No local video element available for preview');
       }
       
       return stream;
     } catch (error) {
-      console.error('Error getting user media:', error);
+      logWebRTC('Error getting user media', error);
       return null;
     }
   }
 
   // Mute/unmute audio
   toggleAudio(enabled: boolean) {
+    logWebRTC('Toggling audio', enabled);
+    
     if (this.mediaState.localStream) {
-      this.mediaState.localStream.getAudioTracks().forEach(track => {
-        console.log(`Setting audio track ${track.label} enabled: ${enabled}`);
+      const audioTracks = this.mediaState.localStream.getAudioTracks();
+      logWebRTC(`Found ${audioTracks.length} audio tracks to toggle`);
+      
+      audioTracks.forEach(track => {
+        logWebRTC(`Setting audio track ${track.label} enabled: ${enabled}`);
         track.enabled = enabled;
       });
+      
       this.mediaState.audioEnabled = enabled;
     } else {
-      console.warn('No local stream available to toggle audio');
+      logWebRTC('No local stream available to toggle audio');
     }
   }
 
   // Enable/disable video
   toggleVideo(enabled: boolean) {
+    logWebRTC('Toggling video', enabled);
+    
     if (this.mediaState.localStream) {
-      this.mediaState.localStream.getVideoTracks().forEach(track => {
-        console.log(`Setting video track ${track.label} enabled: ${enabled}`);
+      const videoTracks = this.mediaState.localStream.getVideoTracks();
+      logWebRTC(`Found ${videoTracks.length} video tracks to toggle`);
+      
+      videoTracks.forEach(track => {
+        logWebRTC(`Setting video track ${track.label} enabled: ${enabled}`);
         track.enabled = enabled;
       });
+      
       this.mediaState.videoEnabled = enabled;
     } else {
-      console.warn('No local stream available to toggle video');
+      logWebRTC('No local stream available to toggle video');
     }
   }
 
   // Toggle speaker
   toggleSpeaker(enabled: boolean) {
+    logWebRTC('Toggling speaker', enabled);
     this.mediaState.speakerEnabled = enabled;
     
     // Implementasi untuk audio output device jika tersedia
@@ -298,11 +510,22 @@ class KamailioService {
       // Catatan: setSinkId memerlukan izin pengguna
       try {
         // @ts-ignore - setSinkId tidak ada di tipe HTMLVideoElement standar
-        this.remoteVideoElement.setSinkId(enabled ? 'speakerphone' : 'earpiece').catch(err => {
-          console.error('Failed to set audio output device', err);
-        });
+        this.remoteVideoElement.setSinkId(enabled ? 'speakerphone' : 'earpiece')
+          .then(() => logWebRTC(`Audio output set to ${enabled ? 'speaker' : 'earpiece'}`))
+          .catch((err: any) => {
+            logWebRTC('Failed to set audio output device', err);
+          });
       } catch (error) {
-        console.error('Error setting audio output device:', error);
+        logWebRTC('Error setting audio output device', error);
+      }
+    } else {
+      logWebRTC('setSinkId not supported by this browser');
+      
+      // Fallback - adjust volume dengan cast eksplisit untuk menghindari error typescript
+      if (this.remoteVideoElement) {
+        const videoElement = this.remoteVideoElement as HTMLVideoElement;
+        videoElement.volume = enabled ? 1.0 : 0.5;
+        logWebRTC(`Adjusted volume to ${enabled ? '100%' : '50%'} as fallback`);
       }
     }
   }
@@ -313,35 +536,56 @@ class KamailioService {
       throw new Error('User agent not initialized. Call initialize() first.');
     }
 
-    // Dapatkan media stream untuk audio/video
-    const stream = await this.getUserMedia(type === 'video');
-    
-    if (!stream) {
-      throw new Error('Failed to get user media');
-    }
-
-    // Konfigurasi yang lebih baik untuk options
-    const options: JsSIPSessionOptions = {
-      mediaConstraints: {
-        audio: true,
-        video: type === 'video' ? {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 }
-        } : false
-      },
-      pcConfig: {
-        iceServers: this.config.iceServers,
-        iceTransportPolicy: 'all'
-      }
-    };
-
-    console.log('Making call to', phoneNumber, 'with type', type);
-    
-    // Siapkan target URI
-    const target = `sip:${phoneNumber}@${this.config.domain}`;
+    logWebRTC(`Initiating ${type} call to ${phoneNumber}`);
     
     try {
+      // Checks for video call
+      if (type === 'video' && !this.isVideoCallReady) {
+        logWebRTC('Video elements not ready for video call');
+        if (!this.localVideoElement || !this.remoteVideoElement) {
+          throw new Error('Video elements belum siap. Silakan coba lagi.');
+        }
+      }
+      
+      // Dapatkan media stream untuk audio/video
+      const stream = await this.getUserMedia(type === 'video');
+      
+      if (!stream) {
+        const errorMsg = `Failed to get ${type} stream. Periksa izin kamera dan mikrofon.`;
+        logWebRTC(errorMsg);
+        throw new Error(errorMsg);
+      }
+
+      // Konfigurasi yang lebih baik untuk options
+      const options = {
+        mediaConstraints: {
+          audio: true,
+          video: type === 'video'
+        },
+        pcConfig: {
+          iceServers: this.config.iceServers,
+          iceTransportPolicy: 'all',
+          // Tambahkan RTCConfiguration lainnya jika diperlukan
+          bundlePolicy: 'balanced',
+          rtcpMuxPolicy: 'require',
+          sdpSemantics: 'unified-plan'
+        },
+        mediaStream: stream, // Tambahkan stream langsung ke options
+        rtcOfferConstraints: {
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: type === 'video'
+        }
+      };
+
+      logWebRTC('Call options', JSON.stringify(options, (key, value) => {
+        // Jangan log MediaStream sebagai JSON
+        if (key === 'mediaStream' && value instanceof MediaStream) return '[MediaStream]';
+        return value;
+      }));
+      
+      // Siapkan target URI
+      const target = `sip:${phoneNumber}@${this.config.domain}`;
+      
       // Tambahkan metode extraHeaders untuk memastikan bahwa tipe panggilan diketahui
       const extraHeaders = type === 'video' ? 
         ['X-Call-Type: video'] : 
@@ -353,7 +597,7 @@ class KamailioService {
         extraHeaders
       });
       
-      // @ts-ignore - JsSIP types tidak sesuai dengan implementasi aktual
+      // Simpan session panggilan
       this.session = callSession;
       
       // Setup call listeners
@@ -365,38 +609,31 @@ class KamailioService {
         if (this.session.connection) {
           this.setupMediaListeners(this.session);
         } else {
-          console.warn('No RTCPeerConnection available yet');
+          logWebRTC('No RTCPeerConnection available yet');
           
           // Tambahkan listener untuk peerconnection event
           this.session.on('peerconnection', (data: any) => {
-            console.log('Peer connection created');
+            logWebRTC('Peer connection created', {
+              peerconnection: !!data.peerconnection
+            });
             if (data && data.peerconnection) {
-              this.setupMediaListeners(this.session!);
+              this.setupMediaListeners(this.session);
             }
           });
         }
-      }
-      
-      // Tambahkan track ke peerConnection jika ada
-      if (this.session && this.session.connection) {
-        stream.getTracks().forEach(track => {
-          try {
-            this.session!.connection.addTrack(track, stream);
-          } catch (error) {
-            console.error('Failed to add track to peer connection:', error);
-          }
-        });
       } else {
-        console.warn('No connection available to add tracks');
+        logWebRTC('Failed to create call session');
+        throw new Error('Gagal membuat sesi panggilan');
       }
       
       return true;
     } catch (error) {
-      console.error('Error making call:', error);
+      logWebRTC('Error making call', error);
       
       // Cleanup stream jika panggilan gagal
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
+      if (this.mediaState.localStream) {
+        this.mediaState.localStream.getTracks().forEach(track => track.stop());
+        this.mediaState.localStream = null;
       }
       
       throw error;
@@ -406,79 +643,92 @@ class KamailioService {
   // Implementasi yang lebih baik untuk answerCall
   async answerCall(type: CallType = 'audio') {
     if (!this.session || this.session.direction !== 'incoming') {
-      console.warn('No incoming call to answer');
+      logWebRTC('No incoming call to answer');
       return false;
     }
     
+    logWebRTC(`Answering call as ${type}`);
+    
     try {
+      // Validasi video call readiness
+      if (type === 'video' && !this.isVideoCallReady) {
+        logWebRTC('Video elements not ready for answering video call');
+        if (!this.localVideoElement || !this.remoteVideoElement) {
+          throw new Error('Video elements belum siap. Silakan coba lagi.');
+        }
+      }
+      
       // Dapatkan media stream untuk audio/video
       const stream = await this.getUserMedia(type === 'video');
       
       if (!stream) {
-        console.error('Failed to get user media');
+        logWebRTC('Failed to get user media for answering call');
         return false;
       }
 
-      const options: JsSIPSessionOptions = {
+      // Konfigurasi untuk menjawab panggilan
+      const options = {
         mediaConstraints: {
           audio: true,
-          video: type === 'video' ? {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 }
-          } : false
+          video: type === 'video'
         },
         pcConfig: {
           iceServers: this.config.iceServers,
-          iceTransportPolicy: 'all'
+          iceTransportPolicy: 'all',
+          bundlePolicy: 'balanced',
+          rtcpMuxPolicy: 'require',
+          sdpSemantics: 'unified-plan'
+        },
+        mediaStream: stream, // Tambahkan stream langsung ke options
+        rtcAnswerConstraints: {
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: type === 'video'
         }
       };
       
-      console.log('Answering call with type', type);
+      logWebRTC('Answer options', JSON.stringify(options, (key, value) => {
+        // Jangan log MediaStream sebagai JSON
+        if (key === 'mediaStream' && value instanceof MediaStream) return '[MediaStream]';
+        return value;
+      }));
       
       // Setup media listeners sebelum jawaban
       if (this.session.connection) {
         this.setupMediaListeners(this.session);
       } else {
-        console.warn('No RTCPeerConnection available yet for incoming call');
+        logWebRTC('No RTCPeerConnection available yet for incoming call');
         
         // Tambahkan listener untuk peerconnection event
         this.session.on('peerconnection', (data: any) => {
-          console.log('Peer connection created for incoming call');
+          logWebRTC('Peer connection created for incoming call', {
+            peerconnection: !!data.peerconnection
+          });
           if (data && data.peerconnection) {
-            this.setupMediaListeners(this.session!);
+            this.setupMediaListeners(this.session);
           }
         });
       }
       
       // Jawab panggilan
       this.session.answer(options);
-      
-      // Tambahkan track ke peerConnection jika sudah tersedia
-      if (this.session.connection) {
-        stream.getTracks().forEach(track => {
-          try {
-            this.session!.connection.addTrack(track, stream);
-          } catch (error) {
-            console.error('Failed to add track to peer connection:', error);
-          }
-        });
-      }
+      logWebRTC('Call answered');
       
       return true;
     } catch (error) {
-      console.error('Error answering call:', error);
+      logWebRTC('Error answering call', error);
       return false;
     }
   }
 
   // Implementasi yang lebih baik untuk endCall
   endCall() {
+    logWebRTC('Ending call');
+    
     // Stop media streams
     if (this.mediaState.localStream) {
-      console.log('Stopping local media tracks');
+      logWebRTC('Stopping local media tracks');
       this.mediaState.localStream.getTracks().forEach(track => {
-        console.log(`Stopping ${track.kind} track: ${track.label}`);
+        logWebRTC(`Stopping ${track.kind} track: ${track.label}`);
         track.stop();
       });
       this.mediaState.localStream = null;
@@ -486,24 +736,28 @@ class KamailioService {
     
     // Clear video elements
     if (this.localVideoElement && this.localVideoElement.srcObject) {
-      console.log('Clearing local video element');
+      logWebRTC('Clearing local video element');
       this.localVideoElement.srcObject = null;
     }
     
     if (this.remoteVideoElement && this.remoteVideoElement.srcObject) {
-      console.log('Clearing remote video element');
+      logWebRTC('Clearing remote video element');
       this.remoteVideoElement.srcObject = null;
     }
     
     // Terminate session
     if (this.session) {
-      console.log('Terminating SIP session');
-      if (!this.session.isEnded()) {
-        this.session.terminate();
+      logWebRTC('Terminating SIP session');
+      try {
+        if (this.session.isEnded && typeof this.session.isEnded === 'function' && !this.session.isEnded()) {
+          this.session.terminate();
+        }
+      } catch (e) {
+        logWebRTC('Error terminating session', e);
       }
       this.session = null;
     } else {
-      console.warn('No active session to terminate');
+      logWebRTC('No active session to terminate');
     }
     
     // Reset media state
@@ -514,39 +768,41 @@ class KamailioService {
       videoEnabled: true,
       speakerEnabled: false
     };
+    
+    logWebRTC('Call ended successfully');
   }
 
   // Implementasi yang lebih baik untuk call listeners
-  private setupCallListeners(session: JsSIPSession) {
+  private setupCallListeners(session: any) {
     if (!session) {
-      console.warn('No session to setup listeners for');
+      logWebRTC('No session to setup listeners for');
       return;
     }
 
-    console.log('Setting up call listeners for session');
+    logWebRTC('Setting up call listeners for session');
 
     session.on('connecting', () => {
-      console.log('Call connecting');
+      logWebRTC('Call connecting');
       this.onCallStatusChange('connecting');
     });
 
     session.on('progress', () => {
-      console.log('Call in progress (ringing)');
+      logWebRTC('Call in progress (ringing)');
       this.onCallStatusChange('ringing');
     });
 
     session.on('accepted', () => {
-      console.log('Call accepted');
+      logWebRTC('Call accepted');
       this.onCallStatusChange('active');
     });
 
     session.on('confirmed', () => {
-      console.log('Call confirmed (answered)');
+      logWebRTC('Call confirmed (answered)');
       this.onCallStatusChange('active');
     });
 
     session.on('ended', () => {
-      console.log('Call ended normally');
+      logWebRTC('Call ended normally');
       this.onCallStatusChange('ended');
       
       // Cleanup media
@@ -559,7 +815,7 @@ class KamailioService {
     });
 
     session.on('failed', (data: any) => {
-      console.error('Call failed', data.cause);
+      logWebRTC('Call failed', data?.cause || 'unknown cause');
       this.onCallStatusChange('failed');
       
       // Cleanup media
@@ -573,50 +829,89 @@ class KamailioService {
 
     // Handle mute/unmute events
     session.on('muted', () => {
-      console.log('Call muted');
+      logWebRTC('Call muted');
     });
 
     session.on('unmuted', () => {
-      console.log('Call unmuted');
+      logWebRTC('Call unmuted');
     });
 
     // New handlers for additional states
-    session.on('reinvite', () => {
-      console.log('Received re-INVITE');
+    session.on('reinvite', (data: any) => {
+      logWebRTC('Received re-INVITE', {
+        hasRequest: !!data?.request,
+        hasBody: data?.request ? !!data.request.body : false
+      });
+      
+      // Cek apakah reinvite untuk video
+      if (data && data.request && data.request.body && 
+          data.request.body.indexOf('m=video') > -1) {
+        logWebRTC('Video re-INVITE detected');
+      }
     });
     
     session.on('update', () => {
-      console.log('Received UPDATE');
+      logWebRTC('Received UPDATE');
     });
     
     session.on('refer', () => {
-      console.log('Received REFER');
+      logWebRTC('Received REFER');
     });
     
     session.on('replaces', () => {
-      console.log('Received REPLACES');
+      logWebRTC('Received REPLACES');
     });
     
     session.on('sdp', (data: any) => {
-      console.log('SDP handler', data.type);
+      logWebRTC('SDP handler', data?.type || 'unknown');
+      
       // Log SDP untuk debugging
-      console.debug('SDP:', data.sdp);
+      if (data && data.sdp) {
+        // Cek apakah SDP mengandung video
+        const hasVideo = data.sdp.indexOf('m=video') > -1;
+        logWebRTC(`SDP ${hasVideo ? 'contains' : 'does not contain'} video section`);
+        
+        // Manipulasi SDP untuk kompatibilitas codec video yang lebih baik
+        if (hasVideo) {
+          if (data.type === 'offer' || data.type === 'answer') {
+            // Prefer common video codecs for better compatibility
+            let modifiedSdp = data.sdp;
+            
+            // Try VP8 first (widely supported)
+            if (modifiedSdp.includes('VP8')) {
+              modifiedSdp = preferCodec(modifiedSdp, 'VP8', 'video');
+              logWebRTC('Modified SDP to prefer VP8 codec');
+            }
+            
+            // If H.264 is available, also give it high priority
+            if (modifiedSdp.includes('H264')) {
+              modifiedSdp = preferCodec(modifiedSdp, 'H264', 'video');
+              logWebRTC('Modified SDP to prefer H.264 codec');
+            }
+            
+            data.sdp = modifiedSdp;
+          }
+        }
+        
+        // Log SDP lengkap di level debug
+        logWebRTC(`Full ${data.type} SDP:`, data.sdp);
+      }
     });
 
     // Handle call transfer
     session.on('transferability', () => {
-      console.log('Transferability changed');
+      logWebRTC('Transferability changed');
     });
   }
 
   // Shutdown service dengan cleanup lengkap
   shutdown() {
-    console.log('Shutting down KamailioService');
+    logWebRTC('Shutting down KamailioService');
     
     // Stop all media
     if (this.mediaState.localStream) {
       this.mediaState.localStream.getTracks().forEach(track => {
-        console.log(`Stopping ${track.kind} track: ${track.label}`);
+        logWebRTC(`Stopping ${track.kind} track: ${track.label}`);
         track.stop();
       });
       this.mediaState.localStream = null;
@@ -633,7 +928,8 @@ class KamailioService {
     
     // Terminate session and UA
     if (this.ua) {
-      if (this.session && !this.session.isEnded()) {
+      if (this.session && this.session.isEnded && 
+          typeof this.session.isEnded === 'function' && !this.session.isEnded()) {
         this.session.terminate();
       }
       this.ua.stop();
@@ -649,7 +945,8 @@ class KamailioService {
       speakerEnabled: false
     };
     
-    console.log('KamailioService shutdown complete');
+    this.isVideoCallReady = false;
+    logWebRTC('KamailioService shutdown complete');
   }
 }
 

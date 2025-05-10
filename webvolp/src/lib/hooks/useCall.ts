@@ -1,3 +1,5 @@
+// src/lib/hooks/useCall.ts
+
 import { useEffect, useState, useRef } from 'react';
 import { useCallStore } from '../../app/store/callStore';
 import { useAuthStore } from '../../app/store/authStore';
@@ -91,6 +93,37 @@ export function useCall() {
     };
   }, [user, isInitialized, callHistory, updateCallStatus]);
 
+  // Debugging untuk video elements
+  useEffect(() => {
+    const debugVideos = () => {
+      if (localVideoRef.current) {
+        console.log('useCall - Local video element status:', {
+          id: localVideoRef.current.id,
+          hasStream: !!localVideoRef.current.srcObject,
+          width: localVideoRef.current.width,
+          height: localVideoRef.current.height
+        });
+      }
+      
+      if (remoteVideoRef.current) {
+        console.log('useCall - Remote video element status:', {
+          id: remoteVideoRef.current.id,
+          hasStream: !!remoteVideoRef.current.srcObject,
+          width: remoteVideoRef.current.width,
+          height: remoteVideoRef.current.height
+        });
+      }
+    };
+    
+    // Debug saat komponnen mounting
+    debugVideos();
+    
+    // Debug setiap 10 detik
+    const interval = setInterval(debugVideos, 10000);
+    
+    return () => clearInterval(interval);
+  }, []);
+
   // Metode untuk membuat panggilan
   const makeCall = async (phoneNumber: string, type: CallType = 'audio') => {
     if (!phoneNumber.trim()) {
@@ -100,6 +133,24 @@ export function useCall() {
     
     try {
       console.log('Making call to', phoneNumber, 'with type', type);
+      
+      // Check camera/mic permission for video calls
+      if (type === 'video') {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: true, 
+            audio: true 
+          });
+          
+          // Stop tracks after permission check
+          stream.getTracks().forEach(track => track.stop());
+          console.log('Camera and microphone permission granted');
+        } catch (err) {
+          console.error('Media permission denied:', err);
+          toast.error('Izin kamera/mikrofon ditolak. Silakan izinkan akses untuk melakukan panggilan video.');
+          return;
+        }
+      }
       
       // Update store first
       storeStartCall(phoneNumber, type);
@@ -111,12 +162,22 @@ export function useCall() {
         // Set initial media state
         setAudioEnabled(true);
         setVideoEnabled(type === 'video');
+        
+        // Log WebRTC debug info
+        if (type === 'video') {
+          console.log('WebRTC video call initiated with:', {
+            service: 'initialized',
+            videoEnabled: true,
+            localVideo: localVideoRef.current ? 'available' : 'not set',
+            remoteVideo: remoteVideoRef.current ? 'available' : 'not set'
+          });
+        }
       } else {
         throw new Error('Layanan VoIP belum diinisialisasi');
       }
     } catch (error) {
       console.error('Failed to make call:', error);
-      toast.error('Gagal melakukan panggilan');
+      toast.error(`Gagal melakukan panggilan: ${error instanceof Error ? error.message : 'Error tidak diketahui'}`);
       
       // Update status menjadi failed
       updateCallStatus('failed');
@@ -138,6 +199,24 @@ export function useCall() {
     try {
       console.log('Answering call from', currentCall.phoneNumber, 'with type', currentCall.type);
       
+      // Pre-check permissions for video calls
+      if (currentCall.type === 'video') {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true
+          });
+          
+          // Stop tracks after permission check
+          stream.getTracks().forEach(track => track.stop());
+          console.log('Camera and microphone permission granted');
+        } catch (err) {
+          console.error('Media permission denied:', err);
+          toast.error('Izin kamera/mikrofon ditolak. Silakan izinkan akses untuk menjawab panggilan video.');
+          return;
+        }
+      }
+      
       // Update store
       storeAnswerCall();
       
@@ -148,12 +227,22 @@ export function useCall() {
         // Set initial media state
         setAudioEnabled(true);
         setVideoEnabled(currentCall.type === 'video');
+        
+        // Log WebRTC debug info
+        if (currentCall.type === 'video') {
+          console.log('WebRTC video call answered with:', {
+            service: 'initialized',
+            videoEnabled: true,
+            localVideo: localVideoRef.current ? 'available' : 'not set',
+            remoteVideo: remoteVideoRef.current ? 'available' : 'not set'
+          });
+        }
       } else {
         throw new Error('Layanan VoIP belum diinisialisasi');
       }
     } catch (error) {
       console.error('Failed to answer call:', error);
-      toast.error('Gagal menjawab panggilan');
+      toast.error(`Gagal menjawab panggilan: ${error instanceof Error ? error.message : 'Error tidak diketahui'}`);
       
       // Update status menjadi failed
       updateCallStatus('failed');
@@ -270,7 +359,10 @@ export function useCall() {
   // Function untuk set video refs ke service
   const setVideoRefs = (localVideo: HTMLVideoElement | null, remoteVideo: HTMLVideoElement | null) => {
     try {
-      console.log('Setting video refs');
+      console.log('Setting video refs to service:', {
+        localVideo: localVideo ? `id=${localVideo.id}` : 'null',
+        remoteVideo: remoteVideo ? `id=${remoteVideo.id}` : 'null'
+      });
       
       // Simpan refs
       if (localVideo) localVideoRef.current = localVideo;
