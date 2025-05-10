@@ -30,35 +30,51 @@ export function CallScreen({ call }: CallScreenProps) {
   
   const activeCall = call || currentCall;
 
-  // Memoize setVideoRefs callback to avoid re-rendering issues
+  // Memoize setVideoRefs callback untuk mencegah masalah rendering berulang
   const updateVideoRefs = useCallback(() => {
-    setVideoRefs(localVideoRef.current, remoteVideoRef.current);
+    if (localVideoRef.current && remoteVideoRef.current) {
+      console.log('Updating video refs');
+      setVideoRefs(localVideoRef.current, remoteVideoRef.current);
+    }
   }, [setVideoRefs]);
 
-  // Set video refs only once on mount
+  // Set video refs saat komponen mount
   useEffect(() => {
     updateVideoRefs();
-  }, [updateVideoRefs]);
+    
+    // Update video refs saat video elements berubah
+    const localVideo = localVideoRef.current;
+    const remoteVideo = remoteVideoRef.current;
+    
+    return () => {
+      // Cleanup video refs saat unmount
+      if (localVideo || remoteVideo) {
+        setVideoRefs(null, null);
+      }
+    };
+  }, [updateVideoRefs, setVideoRefs]);
 
+  // Jalankan timer selama panggilan aktif
   useEffect(() => {
     let interval: NodeJS.Timeout;
     
-    // Start timer when call is active
+    // Mulai timer saat panggilan aktif
     if (activeCall?.status === 'active') {
       interval = setInterval(() => {
         setCallTimer(prev => prev + 1);
       }, 1000);
     } else {
-      // Reset timer when call is not active
+      // Reset timer saat panggilan tidak aktif
       setCallTimer(0);
     }
     
-    // Clean up interval when component unmounts or call ends
+    // Clean up interval saat komponen unmount atau panggilan berakhir
     return () => {
       if (interval) clearInterval(interval);
     };
   }, [activeCall?.status]);
 
+  // Format waktu dari detik ke mm:ss
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -78,27 +94,31 @@ export function CallScreen({ call }: CallScreenProps) {
     toggleSpeaker(!speakerEnabled);
   };
 
-  // If no call, return empty
+  // Jika tidak ada panggilan, kembalikan null
   if (!activeCall) return null;
 
-  // Helper to get status text
+  // Helper untuk mendapatkan teks status
   const getStatusText = () => {
     switch(activeCall.status) {
       case 'calling':
         return 'Memanggil...';
+      case 'connecting':
+        return 'Menghubungkan...';
       case 'ringing':
         return activeCall.direction === 'incoming' ? 'Panggilan Masuk' : 'Berdering...';
       case 'active':
         return formatTime(callTimer);
       case 'ended':
         return 'Panggilan Berakhir';
+      case 'failed':
+        return 'Panggilan Gagal';
       default:
         return '';
     }
   };
 
-  // Render video call UI
-  if (activeCall.type === 'video' && activeCall.status === 'active' && videoEnabled) {
+  // Render tampilan panggilan video
+  if (activeCall.type === 'video' && activeCall.status === 'active') {
     return (
       <div className="fixed inset-0 bg-black z-50 flex flex-col">
         {/* Remote Video (Full screen) */}
@@ -111,7 +131,7 @@ export function CallScreen({ call }: CallScreenProps) {
           />
           
           {/* Local Video (Picture-in-picture) */}
-          <div className="absolute bottom-4 right-4 w-1/4 rounded-lg overflow-hidden border-2 border-white shadow-lg">
+          <div className="absolute bottom-4 right-4 w-1/4 md:w-1/5 rounded-lg overflow-hidden border-2 border-white shadow-lg">
             <video
               ref={localVideoRef}
               autoPlay
@@ -121,8 +141,8 @@ export function CallScreen({ call }: CallScreenProps) {
             />
           </div>
           
-          {/* Call Info */}
-          <div className="absolute top-4 left-0 right-0 text-center text-white">
+          {/* Call Info - selalu tampilkan di atas video */}
+          <div className="absolute top-4 left-0 right-0 text-center text-white bg-black bg-opacity-50 py-2">
             <h2 className="text-xl font-bold">{formatPhoneNumber(activeCall.phoneNumber)}</h2>
             <p className="text-sm">{getStatusText()}</p>
           </div>
@@ -144,10 +164,10 @@ export function CallScreen({ call }: CallScreenProps) {
             variant="outline"
             size="icon-lg"
             roundness="full"
-            className="bg-gray-800 text-white"
+            className={!videoEnabled ? 'bg-red-500 text-white' : 'bg-gray-800 text-white'}
             onClick={handleToggleVideo}
           >
-            <FiVideoOff size={24} />
+            {!videoEnabled ? <FiVideoOff size={24} /> : <FiVideo size={24} />}
           </Button>
           
           <Button
@@ -173,11 +193,11 @@ export function CallScreen({ call }: CallScreenProps) {
     );
   }
 
-  // Render regular audio call UI
+  // Render tampilan panggilan audio
   return (
     <div className="bg-white rounded-lg shadow-lg p-6 max-w-md mx-auto">
       <div className="flex flex-col items-center space-y-6">
-        {/* Contact/Number Info */}
+        {/* Info Kontak/Nomor */}
         <div className="text-center">
           <h2 className="text-2xl font-bold mb-1">{formatPhoneNumber(activeCall.phoneNumber)}</h2>
           <p className="text-primary-600 font-medium">{getStatusText()}</p>
@@ -190,7 +210,7 @@ export function CallScreen({ call }: CallScreenProps) {
           </div>
         </div>
         
-        {/* Call Type Indicator */}
+        {/* Indikator Tipe Panggilan */}
         <div className="bg-secondary-50 py-1 px-3 rounded-full">
           <span className="text-sm text-secondary-600 flex items-center">
             {activeCall.type === 'audio' ? (
@@ -201,7 +221,13 @@ export function CallScreen({ call }: CallScreenProps) {
           </span>
         </div>
         
-        {/* Call Controls */}
+        {/* Video elements masih dirender tapi hidden, untuk mempersiapkan switch ke video */}
+        <div className="hidden">
+          <video ref={localVideoRef} autoPlay playsInline muted />
+          <video ref={remoteVideoRef} autoPlay playsInline />
+        </div>
+        
+        {/* Kontrol Panggilan */}
         <div className="flex flex-wrap justify-center gap-4">
           {activeCall.status === 'active' && (
             <>
@@ -239,7 +265,7 @@ export function CallScreen({ call }: CallScreenProps) {
             </>
           )}
           
-          {/* Answer/Reject for incoming calls */}
+          {/* Tombol Jawab/Tolak untuk panggilan masuk */}
           {activeCall.direction === 'incoming' && activeCall.status === 'ringing' && (
             <>
               <Button
@@ -263,10 +289,11 @@ export function CallScreen({ call }: CallScreenProps) {
             </>
           )}
           
-          {/* End Call button (for active, calling or outgoing ringing) */}
+          {/* Tombol End Call (untuk panggilan aktif, outgoing, atau panggilan sedang berlangsung) */}
           {(activeCall.status === 'active' || 
             (activeCall.status === 'ringing' && activeCall.direction === 'outgoing') || 
-            activeCall.status === 'calling') && (
+            activeCall.status === 'calling' ||
+            activeCall.status === 'connecting') && (
             <Button
               variant="destructive"
               size="icon-xl"

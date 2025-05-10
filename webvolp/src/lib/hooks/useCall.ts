@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useCallStore } from '../../app/store/callStore';
 import { useAuthStore } from '../../app/store/authStore';
 import { kamailioService } from '../../lib/api/kamailioService';
 import { CallType, CallStatus, CallDirection } from '../../app/types';
+import { toast } from 'react-toastify';
 
 export function useCall() {
   const { user } = useAuthStore();
@@ -22,128 +23,264 @@ export function useCall() {
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [speakerEnabled, setSpeakerEnabled] = useState(false);
+  
+  // Refs untuk elemen video
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
   // Initialize Kamailio service when user is available
   useEffect(() => {
     if (user && !isInitialized) {
-      // Setup Kamailio with user credentials
-      kamailioService.initialize(
-        { 
-          phoneNumber: user.phoneNumber, 
-          password: 'password' // In a real app, this would be securely stored
-        },
-        // Status callback
-        (status) => {
-          updateCallStatus(status as CallStatus);
-        },
-        // Incoming call callback
-        (phoneNumber, type) => {
-          // Create a new incoming call in the store
-          const newCall = {
-            id: Date.now().toString(),
-            type,
-            phoneNumber,
-            direction: 'incoming' as CallDirection,
-            status: 'ringing' as CallStatus,
-            startTime: new Date()
-          };
-          
-          useCallStore.setState({ 
-            currentCall: newCall,
-            callHistory: [newCall, ...callHistory]
-          });
-        }
-      );
+      console.log('Initializing Kamailio service with user:', user.phoneNumber);
       
-      setIsInitialized(true);
+      try {
+        // Setup Kamailio dengan kredensial pengguna
+        kamailioService.initialize(
+          { 
+            phoneNumber: user.phoneNumber, 
+            password: 'password123' // Dalam aplikasi nyata, gunakan kredensial yang aman
+          },
+          // Status callback
+          (status) => {
+            console.log('Call status changed:', status);
+            updateCallStatus(status);
+            
+            // Tampilkan notifikasi untuk perubahan status tertentu
+            if (status === 'failed') {
+              toast.error('Panggilan gagal. Periksa koneksi jaringan Anda.');
+            }
+          },
+          // Incoming call callback
+          (phoneNumber, type) => {
+            console.log('Incoming call from:', phoneNumber, 'type:', type);
+            
+            // Notifikasi panggilan masuk
+            toast.info(`Panggilan ${type === 'video' ? 'video' : 'suara'} masuk dari ${phoneNumber}`);
+            
+            // Buat panggilan masuk baru di store
+            const newCall = {
+              id: Date.now().toString(),
+              type,
+              phoneNumber,
+              direction: 'incoming' as CallDirection,
+              status: 'ringing' as CallStatus,
+              startTime: new Date()
+            };
+            
+            useCallStore.setState({ 
+              currentCall: newCall,
+              callHistory: [newCall, ...callHistory]
+            });
+          }
+        );
+        
+        setIsInitialized(true);
+        console.log('Kamailio service initialized successfully');
+      } catch (error) {
+        console.error('Failed to initialize Kamailio service:', error);
+        toast.error('Gagal menginisialisasi layanan VoIP');
+      }
     }
     
-    // Cleanup on unmount
+    // Cleanup pada unmount
     return () => {
       if (isInitialized) {
+        console.log('Cleaning up Kamailio service');
         kamailioService.shutdown();
       }
     };
   }, [user, isInitialized, callHistory, updateCallStatus]);
 
-  // Enhanced call methods that use both store and Kamailio service
-  const makeCall = (phoneNumber: string, type: CallType = 'audio') => {
-    storeStartCall(phoneNumber, type);
+  // Metode untuk membuat panggilan
+  const makeCall = async (phoneNumber: string, type: CallType = 'audio') => {
+    if (!phoneNumber.trim()) {
+      toast.error('Masukkan nomor telepon terlebih dahulu');
+      return;
+    }
     
-    if (isInitialized) {
-      try {
-        kamailioService.makeCall(phoneNumber, type);
-      } catch (error) {
-        console.error('Failed to make call:', error);
-        // Update status to failed
-        updateCallStatus('ended');
+    try {
+      console.log('Making call to', phoneNumber, 'with type', type);
+      
+      // Update store first
+      storeStartCall(phoneNumber, type);
+      
+      if (isInitialized) {
+        // Lakukan panggilan menggunakan Kamailio
+        await kamailioService.makeCall(phoneNumber, type);
+        
+        // Set initial media state
+        setAudioEnabled(true);
+        setVideoEnabled(type === 'video');
+      } else {
+        throw new Error('Layanan VoIP belum diinisialisasi');
       }
+    } catch (error) {
+      console.error('Failed to make call:', error);
+      toast.error('Gagal melakukan panggilan');
+      
+      // Update status menjadi failed
+      updateCallStatus('failed');
+      
+      // Akhiri panggilan di store
+      setTimeout(() => {
+        storeEndCall();
+      }, 1000);
     }
   };
 
-  const answerCall = () => {
-    storeAnswerCall();
+  // Metode untuk menjawab panggilan
+  const answerCall = async () => {
+    if (!currentCall) {
+      console.warn('No incoming call to answer');
+      return;
+    }
     
-    if (isInitialized && currentCall) {
-      try {
-        kamailioService.answerCall(currentCall.type);
-      } catch (error) {
-        console.error('Failed to answer call:', error);
-        updateCallStatus('ended');
+    try {
+      console.log('Answering call from', currentCall.phoneNumber, 'with type', currentCall.type);
+      
+      // Update store
+      storeAnswerCall();
+      
+      if (isInitialized) {
+        // Jawab panggilan menggunakan Kamailio
+        await kamailioService.answerCall(currentCall.type);
+        
+        // Set initial media state
+        setAudioEnabled(true);
+        setVideoEnabled(currentCall.type === 'video');
+      } else {
+        throw new Error('Layanan VoIP belum diinisialisasi');
       }
+    } catch (error) {
+      console.error('Failed to answer call:', error);
+      toast.error('Gagal menjawab panggilan');
+      
+      // Update status menjadi failed
+      updateCallStatus('failed');
+      
+      // Akhiri panggilan di store
+      setTimeout(() => {
+        storeEndCall();
+      }, 1000);
     }
   };
 
+  // Metode untuk mengakhiri panggilan
   const endCall = () => {
-    storeEndCall();
+    if (!currentCall) {
+      console.warn('No active call to end');
+      return;
+    }
     
-    if (isInitialized) {
-      try {
+    try {
+      console.log('Ending call with', currentCall.phoneNumber);
+      
+      // Akhiri panggilan di store
+      storeEndCall();
+      
+      if (isInitialized) {
+        // Akhiri panggilan menggunakan Kamailio
         kamailioService.endCall();
-      } catch (error) {
-        console.error('Failed to end call:', error);
       }
+      
+      // Reset media state
+      setAudioEnabled(true);
+      setVideoEnabled(true);
+    } catch (error) {
+      console.error('Failed to end call:', error);
+      toast.error('Gagal mengakhiri panggilan');
     }
   };
 
+  // Metode untuk menolak panggilan
   const rejectCall = () => {
-    storeRejectCall();
+    if (!currentCall || currentCall.direction !== 'incoming') {
+      console.warn('No incoming call to reject');
+      return;
+    }
     
-    if (isInitialized) {
-      try {
+    try {
+      console.log('Rejecting call from', currentCall.phoneNumber);
+      
+      // Tolak panggilan di store
+      storeRejectCall();
+      
+      if (isInitialized) {
+        // Tolak panggilan menggunakan Kamailio
         kamailioService.endCall();
-      } catch (error) {
-        console.error('Failed to reject call:', error);
       }
+      
+      // Reset media state
+      setAudioEnabled(true);
+      setVideoEnabled(true);
+    } catch (error) {
+      console.error('Failed to reject call:', error);
+      toast.error('Gagal menolak panggilan');
     }
   };
 
-  // Media control functions
+  // Metode untuk toggle audio
   const toggleAudio = (enabled: boolean) => {
-    setAudioEnabled(enabled);
-    if (isInitialized) {
-      kamailioService.toggleAudio(enabled);
+    try {
+      console.log('Toggling audio:', enabled);
+      setAudioEnabled(enabled);
+      
+      if (isInitialized) {
+        kamailioService.toggleAudio(enabled);
+      }
+      
+      toast.info(enabled ? 'Mikrofon aktif' : 'Mikrofon dimatikan');
+    } catch (error) {
+      console.error('Failed to toggle audio:', error);
     }
   };
 
+  // Metode untuk toggle video
   const toggleVideo = (enabled: boolean) => {
-    setVideoEnabled(enabled);
-    if (isInitialized) {
-      kamailioService.toggleVideo(enabled);
+    try {
+      console.log('Toggling video:', enabled);
+      setVideoEnabled(enabled);
+      
+      if (isInitialized) {
+        kamailioService.toggleVideo(enabled);
+      }
+      
+      toast.info(enabled ? 'Kamera aktif' : 'Kamera dimatikan');
+    } catch (error) {
+      console.error('Failed to toggle video:', error);
     }
   };
 
+  // Metode untuk toggle speaker
   const toggleSpeaker = (enabled: boolean) => {
-    setSpeakerEnabled(enabled);
-    if (isInitialized) {
-      kamailioService.toggleSpeaker(enabled);
+    try {
+      console.log('Toggling speaker:', enabled);
+      setSpeakerEnabled(enabled);
+      
+      if (isInitialized) {
+        kamailioService.toggleSpeaker(enabled);
+      }
+      
+      toast.info(enabled ? 'Speaker aktif' : 'Speaker dimatikan');
+    } catch (error) {
+      console.error('Failed to toggle speaker:', error);
     }
   };
 
-  // Function to set video elements
+  // Function untuk set video refs ke service
   const setVideoRefs = (localVideo: HTMLVideoElement | null, remoteVideo: HTMLVideoElement | null) => {
-    if (isInitialized) {
-      kamailioService.setVideoElements(localVideo, remoteVideo);
+    try {
+      console.log('Setting video refs');
+      
+      // Simpan refs
+      if (localVideo) localVideoRef.current = localVideo;
+      if (remoteVideo) remoteVideoRef.current = remoteVideo;
+      
+      if (isInitialized) {
+        kamailioService.setVideoElements(localVideo, remoteVideo);
+      }
+    } catch (error) {
+      console.error('Failed to set video refs:', error);
     }
   };
 
@@ -164,6 +301,8 @@ export function useCall() {
     toggleVideo,
     toggleSpeaker,
     // Video refs
-    setVideoRefs
+    setVideoRefs,
+    localVideoRef,
+    remoteVideoRef
   };
 }
