@@ -1,5 +1,3 @@
-// src/lib/hooks/useCall.ts
-
 import { useEffect, useState, useRef } from 'react';
 import { useCallStore } from '../../app/store/callStore';
 import { useAuthStore } from '../../app/store/authStore';
@@ -73,6 +71,16 @@ export function useCall() {
               currentCall: newCall,
               callHistory: [newCall, ...callHistory]
             });
+          },
+          // Connection callback (parameter ke-4 yang hilang)
+          (connectionStatus) => {
+            console.log('Connection status changed:', connectionStatus);
+            // Handle connection status changes here
+            if (connectionStatus === false) {
+              toast.error('Koneksi VoIP terputus');
+            } else if (connectionStatus === true) {
+              toast.success('Terhubung ke layanan VoIP');
+            }
           }
         );
         

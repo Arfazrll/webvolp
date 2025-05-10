@@ -1,48 +1,94 @@
+// src/lib/api/kamailioService.ts - Perbaikan untuk video call
+
 import * as JsSIP from 'jssip';
 import { KamailioConfig, KamailioCredentials, CallType, CallStatus, MediaStreamState } from '../../app/types';
+import { toast } from 'react-toastify';
 
 // Fungsi untuk memprioritaskan codec video tertentu untuk meningkatkan kompatibilitas
 function preferCodec(sdp: string, codecName: string, codecType: 'audio' | 'video'): string {
-  const sections = sdp.split('\r\nm=');
-  const header = sections[0];
-  const rest = sections.slice(1);
-  
-  const mediaSection = rest.find(section => section.startsWith(codecType));
-  if (!mediaSection) return sdp;
-  
-  const lines = mediaSection.split('\r\n');
-  const formatLine = lines.find(line => line.startsWith('a=rtpmap:') && line.includes(codecName));
-  if (!formatLine) return sdp;
-  
-  const codec = formatLine.split(':')[1].split(' ')[0];
-  
-  // Reorder payload types to prefer selected codec
-  const formatLine0 = lines.find(line => line.startsWith('m='));
-  if (!formatLine0) return sdp;
-  
-  const parts = formatLine0.split(' ');
-  const payloadTypes = parts.slice(3);
-  
-  // Remove current codec and put it first
-  const index = payloadTypes.indexOf(codec);
-  if (index === -1) return sdp;
-  
-  payloadTypes.splice(index, 1);
-  payloadTypes.unshift(codec);
-  
-  // Update the m= line
-  parts.splice(3, parts.length - 3, ...payloadTypes);
-  lines[0] = parts.join(' ');
-  
-  // Rebuild the section
-  const newMediaSection = lines.join('\r\n');
-  
-  // Rebuild the SDP
-  const newSections = rest.map(section => 
-    section.startsWith(codecType) ? newMediaSection : section
-  );
-  
-  return `${header}\r\nm=${newSections.join('\r\nm=')}`;
+  try {
+    const sections = sdp.split('\r\nm=');
+    const header = sections[0];
+    const rest = sections.slice(1);
+    
+    const mediaSection = rest.find(section => section.startsWith(codecType));
+    if (!mediaSection) return sdp;
+    
+    const lines = mediaSection.split('\r\n');
+    const formatLine = lines.find(line => line.startsWith('a=rtpmap:') && line.includes(codecName));
+    if (!formatLine) return sdp;
+    
+    const codec = formatLine.split(':')[1].split(' ')[0];
+    
+    // Reorder payload types to prefer selected codec
+    const formatLine0 = lines.find(line => line.startsWith('m='));
+    if (!formatLine0) return sdp;
+    
+    const parts = formatLine0.split(' ');
+    const payloadTypes = parts.slice(3);
+    
+    // Remove current codec and put it first
+    const index = payloadTypes.indexOf(codec);
+    if (index === -1) return sdp;
+    
+    payloadTypes.splice(index, 1);
+    payloadTypes.unshift(codec);
+    
+    // Update the m= line
+    parts.splice(3, parts.length - 3, ...payloadTypes);
+    lines[0] = parts.join(' ');
+    
+    // Rebuild the section
+    const newMediaSection = lines.join('\r\n');
+    
+    // Rebuild the SDP
+    const newSections = rest.map(section => 
+      section.startsWith(codecType) ? newMediaSection : section
+    );
+    
+    return `${header}\r\nm=${newSections.join('\r\nm=')}`;
+  } catch (error) {
+    console.error('Error preferring codec:', error);
+    return sdp; // Return original SDP if something went wrong
+  }
+}
+
+// Fungsi untuk meningkatkan bandwidth untuk video
+function increaseBandwidth(sdp: string): string {
+  try {
+    // Tambahkan b=AS:2000 ke semua bagian video untuk meningkatkan kualitas
+    const sections = sdp.split('\r\nm=');
+    const header = sections[0];
+    const rest = sections.slice(1);
+    
+    const newSections = rest.map(section => {
+      if (section.startsWith('video')) {
+        const lines = section.split('\r\n');
+        
+        // Cek apakah sudah ada b=AS:
+        const hasBandwidth = lines.some(line => line.startsWith('b=AS:'));
+        
+        if (!hasBandwidth) {
+          // Tambahkan setelah baris c=
+          const cLineIndex = lines.findIndex(line => line.startsWith('c='));
+          if (cLineIndex !== -1) {
+            lines.splice(cLineIndex + 1, 0, 'b=AS:2000'); // 2 Mbps
+          } else {
+            // Jika tidak ada c=, tambahkan di awal
+            lines.unshift('b=AS:2000');
+          }
+        }
+        
+        return lines.join('\r\n');
+      }
+      return section;
+    });
+    
+    return `${header}\r\nm=${newSections.join('\r\nm=')}`;
+  } catch (error) {
+    console.error('Error increasing bandwidth:', error);
+    return sdp; // Return original SDP if something went wrong
+  }
 }
 
 // Logger untuk debugging WebRTC
@@ -57,6 +103,7 @@ class KamailioService {
   private config: KamailioConfig;
   private onCallStatusChange: (status: CallStatus) => void = () => {};
   private onIncomingCall: (phoneNumber: string, type: CallType) => void = () => {};
+  private onConnectionChange: (connected: boolean) => void = () => {};
   private mediaState: MediaStreamState = {
     localStream: null,
     remoteStream: null,
@@ -67,6 +114,10 @@ class KamailioService {
   private localVideoElement: HTMLVideoElement | null = null;
   private remoteVideoElement: HTMLVideoElement | null = null;
   private isVideoCallReady: boolean = false;
+  private isInitializing: boolean = false;
+  private retryCount: number = 0;
+  private maxRetries: number = 3;
+  private connectionState: string = 'new';
 
   constructor() {
     // Default konfigurasi (seharusnya diambil dari environment variables)
@@ -78,7 +129,6 @@ class KamailioService {
         { urls: ['stun:stun.l.google.com:19302'] },
         { urls: ['stun:stun1.l.google.com:19302'] },
         // Tambahkan TURN server jika tersedia untuk melewati NAT/firewall
-        // Contoh TURN server publik (gunakan server anda sendiri untuk produksi)
         { urls: 'turn:numb.viagenie.ca', username: 'webrtc@live.com', credential: 'muazkh' }
       ]
     };
@@ -91,13 +141,27 @@ class KamailioService {
     });
   }
 
+  // Dapatkan status koneksi saat ini
+  getConnectionState(): string {
+    return this.connectionState;
+  }
+
   initialize(
     credentials: KamailioCredentials, 
     statusCallback: (status: CallStatus) => void, 
-    incomingCallCallback: (phoneNumber: string, type: CallType) => void
+    incomingCallCallback: (phoneNumber: string, type: CallType) => void,
+    connectionCallback: (connected: boolean) => void
   ) {
+    if (this.isInitializing) {
+      logWebRTC('Already initializing, skipping duplicate call');
+      return false;
+    }
+    
+    this.isInitializing = true;
     this.onCallStatusChange = statusCallback;
     this.onIncomingCall = incomingCallCallback;
+    this.onConnectionChange = connectionCallback;
+    this.connectionState = 'new';
 
     try {
       logWebRTC('Initializing JsSIP');
@@ -149,6 +213,12 @@ class KamailioService {
       
       this.ua.on('disconnected', () => {
         logWebRTC('Disconnected from SIP WebSocket');
+        
+        // Jika terputus saat panggilan aktif, kirim status failed
+        if (this.session && this.session.isEstablished && this.session.isEstablished()) {
+          this.onCallStatusChange('failed');
+          this.onConnectionChange(false);
+        }
       });
       
       this.ua.on('registered', () => {
@@ -196,9 +266,11 @@ class KamailioService {
       // Start the user agent
       this.ua.start();
       logWebRTC('JsSIP User Agent started');
+      this.isInitializing = false;
       return true;
     } catch (error) {
       logWebRTC('Error initializing JsSIP', error);
+      this.isInitializing = false;
       return false;
     }
   }
@@ -243,6 +315,53 @@ class KamailioService {
     logWebRTC('Video call readiness set to', this.isVideoCallReady);
   }
 
+  // Upaya untuk menyegarkan stream video saat bermasalah
+  refreshVideoStream() {
+    logWebRTC('Attempting to refresh video stream');
+    
+    if (!this.session || !this.session.isEstablished || !this.session.isEstablished()) {
+      logWebRTC('No active session to refresh');
+      return false;
+    }
+    
+    if (this.retryCount >= this.maxRetries) {
+      logWebRTC('Max retries reached, giving up');
+      return false;
+    }
+    
+    this.retryCount++;
+    
+    try {
+      // Coba renegosiasi koneksi
+      if (this.session.renegotiate) {
+        logWebRTC(`Renegotiating session (attempt ${this.retryCount} of ${this.maxRetries})`);
+        
+        const options = {
+          mediaConstraints: {
+            audio: true,
+            video: true
+          }
+        };
+        
+        this.session.renegotiate(options, 
+          () => {
+            logWebRTC('Renegotiation successful');
+            this.retryCount = 0; // Reset retry counter on success
+          },
+          (error: any) => {
+            logWebRTC('Renegotiation failed', error);
+          }
+        );
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      logWebRTC('Error refreshing video stream', error);
+      return false;
+    }
+  }
+
   // Implementasi yang lebih baik untuk setupMediaListeners
   private setupMediaListeners(session: any) {
     if (!session.connection) {
@@ -252,8 +371,12 @@ class KamailioService {
     
     logWebRTC('Setting up media listeners for RTCPeerConnection');
 
+    // Simpan referensi ke RTCPeerConnection untuk debugging
+    const pc = session.connection;
+    logWebRTC('RTCPeerConnection config:', pc.getConfiguration());
+
     // Handle remote tracks
-    session.connection.ontrack = (event: any) => {
+    pc.ontrack = (event: any) => {
       logWebRTC('Remote track received', {
         kind: event.track.kind,
         label: event.track.label,
@@ -276,11 +399,14 @@ class KamailioService {
           }))
         );
         
+        // Simpan remote stream
         this.mediaState.remoteStream = stream;
         
         // Tambahkan event listener untuk track ended
         event.track.onended = () => {
           logWebRTC(`Remote ${event.track.kind} track ended`);
+          // Beritahu UI bahwa koneksi bermasalah
+          this.onConnectionChange(false);
         };
         
         // Tambahkan event listener untuk track mute/unmute
@@ -307,7 +433,11 @@ class KamailioService {
           
           // Mainkan video dengan penanganan error yang lebih baik
           this.remoteVideoElement.play()
-            .then(() => logWebRTC('Remote video playback started'))
+            .then(() => {
+              logWebRTC('Remote video playback started');
+              // Beritahu UI bahwa video sudah terhubung
+              this.onConnectionChange(true);
+            })
             .catch(err => {
               logWebRTC('Failed to play remote video', err);
               
@@ -316,58 +446,92 @@ class KamailioService {
               if (this.remoteVideoElement) {
                 this.remoteVideoElement.muted = true;
                 this.remoteVideoElement.play()
-                  .then(() => logWebRTC('Remote video playback started (muted)'))
-                  .catch(err2 => logWebRTC('Still failed to play remote video even muted', err2));
+                  .then(() => {
+                    logWebRTC('Remote video playback started (muted)');
+                    // Beritahu UI bahwa video sudah terhubung meski muted
+                    this.onConnectionChange(true);
+                  })
+                  .catch(err2 => {
+                    logWebRTC('Still failed to play remote video even muted', err2);
+                    // Beritahu UI bahwa koneksi bermasalah
+                    this.onConnectionChange(false);
+                  });
               }
             });
         } else {
           logWebRTC('No remote video element available to display remote stream');
+          // Beritahu UI bahwa koneksi bermasalah karena tidak ada elemen video
+          this.onConnectionChange(false);
         }
       } else {
         logWebRTC('Received track but no stream available');
+        // Beritahu UI bahwa koneksi bermasalah
+        this.onConnectionChange(false);
       }
     };
 
     // Handle connection state changes
-    session.connection.onconnectionstatechange = () => {
-      logWebRTC('Connection state changed', session.connection.connectionState);
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      this.connectionState = state;
+      logWebRTC('Connection state changed', state);
+      
+      // Beritahu perubahan state koneksi
+      const isConnected = state === 'connected' || state === 'completed';
+      this.onConnectionChange(isConnected);
       
       // Jika koneksi terputus, coba sambungkan kembali atau akhiri panggilan
-      if (session.connection.connectionState === 'failed') {
+      if (state === 'failed') {
         logWebRTC('Connection failed, ending call');
         this.onCallStatusChange('failed');
         this.endCall();
+      } else if (state === 'disconnected') {
+        logWebRTC('Connection disconnected, attempting to reconnect');
+        // Coba reconnect, tapi jika terlalu lama, akhiri panggilan
+        setTimeout(() => {
+          if (pc.connectionState === 'disconnected') {
+            logWebRTC('Still disconnected after timeout, ending call');
+            this.onCallStatusChange('failed');
+            this.endCall();
+          }
+        }, 10000); // 10 detik timeout
       }
     };
     
     // Handle ICE connection state changes
-    session.connection.oniceconnectionstatechange = () => {
-      logWebRTC('ICE connection state changed', session.connection.iceConnectionState);
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      logWebRTC('ICE connection state changed', state);
       
-      // Jika koneksi terputus
-      if (session.connection.iceConnectionState === 'disconnected' || 
-          session.connection.iceConnectionState === 'failed') {
+      // Jika koneksi ICE terputus
+      if (state === 'disconnected' || state === 'failed') {
         logWebRTC('ICE connection failed or disconnected');
         
+        // Beritahu UI bahwa koneksi bermasalah
+        this.onConnectionChange(false);
+        
         // Jika gagal selama lebih dari 5 detik, akhiri panggilan
-        if (session.connection.iceConnectionState === 'failed') {
+        if (state === 'failed') {
           logWebRTC('ICE connection failed permanently, ending call');
           this.onCallStatusChange('failed');
           setTimeout(() => this.endCall(), 5000);
         }
+      } else if (state === 'connected' || state === 'completed') {
+        // Beritahu UI bahwa koneksi berjalan baik
+        this.onConnectionChange(true);
       }
     };
     
     // Handle ICE gathering state
-    session.connection.onicegatheringstatechange = () => {
-      logWebRTC('ICE gathering state', session.connection.iceGatheringState);
+    pc.onicegatheringstatechange = () => {
+      logWebRTC('ICE gathering state', pc.iceGatheringState);
     };
     
     // Log ICE candidates untuk debug
-    session.connection.onicecandidate = (event: any) => {
+    pc.onicecandidate = (event: any) => {
       if (event.candidate) {
         logWebRTC('New ICE candidate', {
-          candidate: event.candidate.candidate,
+          candidate: event.candidate.candidate?.substr(0, 50) + '...',
           sdpMid: event.candidate.sdpMid,
           sdpMLineIndex: event.candidate.sdpMLineIndex
         });
@@ -376,13 +540,8 @@ class KamailioService {
       }
     };
     
-    // Handle negotiation needed - penting untuk video
-    session.connection.onnegotiationneeded = () => {
-      logWebRTC('Negotiation needed for peer connection');
-    };
-    
     // Log data channel events if they occur
-    session.connection.ondatachannel = (event: any) => {
+    pc.ondatachannel = (event: any) => {
       logWebRTC('Data channel received', event.channel.label);
     };
   }
@@ -390,25 +549,8 @@ class KamailioService {
   // Implementasi yang lebih baik untuk getUserMedia
   private async getUserMedia(isVideo: boolean): Promise<MediaStream | null> {
     try {
-      // Coba minta izin media dulu dengan batasan minimal
-      logWebRTC(`Checking ${isVideo ? 'video' : 'audio'} permission`);
-      try {
-        const checkStream = await navigator.mediaDevices.getUserMedia({
-          audio: true, 
-          video: isVideo
-        });
-        
-        // Berhenti streaming cek untuk membebaskan perangkat
-        checkStream.getTracks().forEach(track => track.stop());
-        logWebRTC('Permission granted for media devices');
-      } catch (permError) {
-        logWebRTC('Media permission denied', permError);
-        throw new Error(`Izin untuk mengakses ${isVideo ? 'kamera' : 'mikrofon'} ditolak. Silakan berikan izin dan coba lagi.`);
-      }
-      
       // Batasan media yang lebih adaptif untuk video
       const videoConstraints: MediaTrackConstraints = {
-        // Mulai dengan resolusi lebih rendah untuk kompatibilitas yang lebih baik
         width: { ideal: 640, min: 320 },
         height: { ideal: 480, min: 240 },
         frameRate: { ideal: 24, min: 15 }
@@ -539,6 +681,12 @@ class KamailioService {
     logWebRTC(`Initiating ${type} call to ${phoneNumber}`);
     
     try {
+      // Reset retry counter
+      this.retryCount = 0;
+      
+      // Reset connection state
+      this.connectionState = 'new';
+      
       // Checks for video call
       if (type === 'video' && !this.isVideoCallReady) {
         logWebRTC('Video elements not ready for video call');
@@ -565,7 +713,6 @@ class KamailioService {
         pcConfig: {
           iceServers: this.config.iceServers,
           iceTransportPolicy: 'all',
-          // Tambahkan RTCConfiguration lainnya jika diperlukan
           bundlePolicy: 'balanced',
           rtcpMuxPolicy: 'require',
           sdpSemantics: 'unified-plan'
@@ -605,7 +752,6 @@ class KamailioService {
         this.setupCallListeners(this.session);
         
         // Setup media listeners setelah session dibuat
-        // Ini harus dilakukan sebelum panggilan dimulai
         if (this.session.connection) {
           this.setupMediaListeners(this.session);
         } else {
@@ -650,6 +796,12 @@ class KamailioService {
     logWebRTC(`Answering call as ${type}`);
     
     try {
+      // Reset retry counter
+      this.retryCount = 0;
+      
+      // Reset connection state
+      this.connectionState = 'new';
+      
       // Validasi video call readiness
       if (type === 'video' && !this.isVideoCallReady) {
         logWebRTC('Video elements not ready for answering video call');
@@ -724,6 +876,9 @@ class KamailioService {
   endCall() {
     logWebRTC('Ending call');
     
+    // Reset connection state
+    this.connectionState = 'closed';
+    
     // Stop media streams
     if (this.mediaState.localStream) {
       logWebRTC('Stopping local media tracks');
@@ -769,6 +924,9 @@ class KamailioService {
       speakerEnabled: false
     };
     
+    // Reset video call ready state
+    this.onConnectionChange(false);
+    
     logWebRTC('Call ended successfully');
   }
 
@@ -805,6 +963,9 @@ class KamailioService {
       logWebRTC('Call ended normally');
       this.onCallStatusChange('ended');
       
+      // Beritahu UI bahwa koneksi berakhir
+      this.onConnectionChange(false);
+      
       // Cleanup media
       if (this.mediaState.localStream) {
         this.mediaState.localStream.getTracks().forEach(track => track.stop());
@@ -817,6 +978,9 @@ class KamailioService {
     session.on('failed', (data: any) => {
       logWebRTC('Call failed', data?.cause || 'unknown cause');
       this.onCallStatusChange('failed');
+      
+      // Beritahu UI bahwa koneksi gagal
+      this.onConnectionChange(false);
       
       // Cleanup media
       if (this.mediaState.localStream) {
@@ -854,14 +1018,6 @@ class KamailioService {
       logWebRTC('Received UPDATE');
     });
     
-    session.on('refer', () => {
-      logWebRTC('Received REFER');
-    });
-    
-    session.on('replaces', () => {
-      logWebRTC('Received REPLACES');
-    });
-    
     session.on('sdp', (data: any) => {
       logWebRTC('SDP handler', data?.type || 'unknown');
       
@@ -889,24 +1045,54 @@ class KamailioService {
               logWebRTC('Modified SDP to prefer H.264 codec');
             }
             
+            // Increase bandwidth for better video quality
+            modifiedSdp = increaseBandwidth(modifiedSdp);
+            logWebRTC('Modified SDP to increase bandwidth');
+            
+            // Update SDP
             data.sdp = modifiedSdp;
           }
         }
-        
-        // Log SDP lengkap di level debug
-        logWebRTC(`Full ${data.type} SDP:`, data.sdp);
       }
     });
 
-    // Handle call transfer
-    session.on('transferability', () => {
-      logWebRTC('Transferability changed');
+    // Additional logging untuk membantu debug
+    session.on('icecandidate', (event: any) => {
+      logWebRTC('ICE candidate event', {
+        candidate: event.candidate?.candidate?.substring(0, 30) + '...',
+        sdpMid: event.candidate?.sdpMid,
+        sdpMLineIndex: event.candidate?.sdpMLineIndex
+      });
+    });
+    
+    session.on('getusermediafailed', (error: any) => {
+      logWebRTC('getUserMedia failed', error);
+      toast.error('Gagal mengakses kamera/mikrofon. Periksa izin browser Anda.');
+    });
+    
+    session.on('peerconnection:createofferfailed', (error: any) => {
+      logWebRTC('Create offer failed', error);
+    });
+    
+    session.on('peerconnection:createanswerfailed', (error: any) => {
+      logWebRTC('Create answer failed', error);
+    });
+    
+    session.on('peerconnection:setlocaldescriptionfailed', (error: any) => {
+      logWebRTC('Set local description failed', error);
+    });
+    
+    session.on('peerconnection:setremotedescriptionfailed', (error: any) => {
+      logWebRTC('Set remote description failed', error);
     });
   }
 
   // Shutdown service dengan cleanup lengkap
   shutdown() {
     logWebRTC('Shutting down KamailioService');
+    
+    // Reset connection state
+    this.connectionState = 'closed';
     
     // Stop all media
     if (this.mediaState.localStream) {
@@ -946,6 +1132,7 @@ class KamailioService {
     };
     
     this.isVideoCallReady = false;
+    this.onConnectionChange(false);
     logWebRTC('KamailioService shutdown complete');
   }
 }

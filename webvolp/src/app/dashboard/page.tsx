@@ -9,150 +9,8 @@ import { Button } from '../../components/ui/Button';
 import { CallHistory } from '../../components/call/CallHistory';
 import { useAuth } from '../../lib/hooks/useAuth';
 import { useCall } from '../../lib/hooks/useCall';
-
-// Komponen VideoChatGuide
-function VideoChatGuide({ onClose }: { onClose: () => void }) {
-  const [status, setStatus] = useState({
-    camera: null as boolean | null,
-    microphone: null as boolean | null,
-    network: null as boolean | null
-  });
-  const [checking, setChecking] = useState(false);
-  
-  // Check device compatibility
-  React.useEffect(() => {
-    // Check if getUserMedia is supported
-    const hasMediaDevices = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-    
-    // Check if WebRTC is supported
-    const hasRTCPeerConnection = !!window.RTCPeerConnection;
-    
-    // Basic network check
-    const isOnline = navigator.onLine;
-    
-    // Update network status
-    setStatus(prev => ({
-      ...prev,
-      network: hasMediaDevices && hasRTCPeerConnection && isOnline
-    }));
-  }, []);
-  
-  const checkDevices = async () => {
-    setChecking(true);
-    
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-      
-      // Check if we got both audio and video tracks
-      const hasVideo = stream.getVideoTracks().length > 0;
-      const hasAudio = stream.getAudioTracks().length > 0;
-      
-      setStatus({
-        camera: hasVideo,
-        microphone: hasAudio,
-        network: status.network
-      });
-      
-      // Stop tracks
-      stream.getTracks().forEach(track => track.stop());
-    } catch (error) {
-      console.error('Error checking devices:', error);
-      
-      // Try to determine which permission was denied
-      if (error instanceof Error) {
-        const errorMessage = error.message.toLowerCase();
-        
-        if (errorMessage.includes('video')) {
-          setStatus(prev => ({ ...prev, camera: false }));
-        }
-        
-        if (errorMessage.includes('audio') || errorMessage.includes('microphone')) {
-          setStatus(prev => ({ ...prev, microphone: false }));
-        }
-      } else {
-        // Generic error
-        setStatus(prev => ({ 
-          ...prev, 
-          camera: false,
-          microphone: false
-        }));
-      }
-    } finally {
-      setChecking(false);
-    }
-  };
-  
-  const getStatusIcon = (isAvailable: boolean | null) => {
-    if (isAvailable === null) return <FiAlertTriangle className="text-yellow-500" />;
-    return isAvailable ? <FiCheck className="text-green-500" /> : <FiX className="text-red-500" />;
-  };
-  
-  const canUseVideoChat = status.camera && status.microphone && status.network;
-
-  return (
-    <div className="bg-white rounded-lg shadow-lg p-6 max-w-md w-full">
-      <div className="text-center mb-6">
-        <h2 className="text-xl font-bold">Panduan Panggilan Video</h2>
-        <p className="text-secondary-600 mt-2">
-          Pastikan perangkat Anda siap untuk panggilan video
-        </p>
-      </div>
-      
-      <div className="space-y-4 mb-6">
-        <div className="flex items-center justify-between p-3 bg-secondary-50 rounded-md">
-          <div className="flex items-center">
-            <FiVideo className="mr-3 text-primary-600" />
-            <span>Kamera</span>
-          </div>
-          {getStatusIcon(status.camera)}
-        </div>
-        
-        <div className="flex items-center justify-between p-3 bg-secondary-50 rounded-md">
-          <div className="flex items-center">
-            <FiMic className="mr-3 text-primary-600" />
-            <span>Mikrofon</span>
-          </div>
-          {getStatusIcon(status.microphone)}
-        </div>
-        
-        <div className="flex items-center justify-between p-3 bg-secondary-50 rounded-md">
-          <div className="flex items-center">
-            <FiWifi className="mr-3 text-primary-600" />
-            <span>Koneksi Internet</span>
-          </div>
-          {getStatusIcon(status.network)}
-        </div>
-      </div>
-      
-      <div className="space-y-4">
-        {!canUseVideoChat && status.camera !== null && (
-          <div className="p-3 bg-yellow-50 text-yellow-800 rounded-md text-sm">
-            <p>
-              {!status.camera && 'Kamera tidak tersedia atau izin ditolak. '}
-              {!status.microphone && 'Mikrofon tidak tersedia atau izin ditolak. '}
-              {!status.network && 'Koneksi internet atau dukungan WebRTC bermasalah. '}
-              Silakan periksa pengaturan browser Anda.
-            </p>
-          </div>
-        )}
-        
-        <div className="flex justify-between">
-          <Button
-            variant="outline"
-            onClick={checkDevices}
-            disabled={checking}
-          >
-            {checking ? 'Memeriksa...' : 'Periksa Perangkat'}
-          </Button>
-          
-          <Button onClick={onClose}>
-            {canUseVideoChat ? 'Mulai Panggilan Video' : 'Tutup'}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
+import { VideoChatGuide } from '../../components/call/VideoChatGuide';
+import { VideoCallButton } from '../../components/call/VideoCallButton'; // Import komponen baru
 
 export default function DashboardPage() {
   const { user } = useAuth();
@@ -166,6 +24,13 @@ export default function DashboardPage() {
   const userDisplay = user?.phoneNumber 
     ? `User ${user.phoneNumber.slice(-4)}` 
     : 'User';
+
+  const handleStartVideoCall = (phoneNumber: string) => {
+    setShowVideoGuide(false);
+    
+    // Panggilan ke nomor akan dilakukan oleh komponen VideoCallButton
+    // Tidak perlu kode tambahan di sini
+  };
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -245,16 +110,21 @@ export default function DashboardPage() {
             {recentCalls.length === 0 && (
               <div className="flex flex-col items-center justify-center p-8">
                 <p className="text-secondary-500 mb-4">Belum ada riwayat panggilan</p>
-                <Link href="/call">
-                  <Button 
-                    variant="default" 
-                    className="inline-flex items-center"
-                    onClick={() => toggleDialPad()}
-                  >
-                    <FiPlus className="mr-2" />
-                    Buat Panggilan Baru
-                  </Button>
-                </Link>
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <Link href="/call">
+                    <Button 
+                      variant="default" 
+                      className="inline-flex items-center"
+                      onClick={() => toggleDialPad()}
+                    >
+                      <FiPlus className="mr-2" />
+                      Buat Panggilan Baru
+                    </Button>
+                  </Link>
+                  
+                  {/* Tambahkan tombol Video Call */}
+                  <VideoCallButton variant="outline" />
+                </div>
               </div>
             )}
           </div>
@@ -266,7 +136,10 @@ export default function DashboardPage() {
       {/* Dialog Panduan Video Call */}
       {showVideoGuide && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <VideoChatGuide onClose={() => setShowVideoGuide(false)} />
+          <VideoChatGuide 
+            onClose={() => setShowVideoGuide(false)}
+            onStartVideoCall={handleStartVideoCall}
+          />
         </div>
       )}
     </div>

@@ -1,22 +1,31 @@
-// src/components/call/VideoChatGuide.tsx (File baru)
+// src/components/call/VideoChatGuide.tsx (Perbaikan)
 
 import React, { useState, useEffect } from 'react';
-import { FiVideo, FiMic, FiWifi, FiCheck, FiX, FiAlertTriangle } from 'react-icons/fi';
+import { FiVideo, FiMic, FiWifi, FiCheck, FiX, FiAlertTriangle, FiCloudLightning } from 'react-icons/fi';
 import { Button } from '../ui/Button';
 
 interface DeviceStatus {
   camera: boolean | null;
   microphone: boolean | null;
   network: boolean | null;
+  webrtc: boolean | null;
 }
 
-export function VideoChatGuide({ onClose }: { onClose: () => void }) {
+// Definisikan props dengan benar
+interface VideoChatGuideProps {
+  onClose: () => void;
+  onStartVideoCall?: (phoneNumber: string) => void; // Tambahkan prop ini dengan tipe yang sesuai
+}
+
+export function VideoChatGuide({ onClose, onStartVideoCall }: VideoChatGuideProps) {
   const [status, setStatus] = useState<DeviceStatus>({
     camera: null,
     microphone: null,
-    network: null
+    network: null,
+    webrtc: null
   });
   const [checking, setChecking] = useState(false);
+  const [phoneNumber, setPhoneNumber] = useState('');
   
   // Check device compatibility
   useEffect(() => {
@@ -32,7 +41,8 @@ export function VideoChatGuide({ onClose }: { onClose: () => void }) {
     // Update network status
     setStatus(prev => ({
       ...prev,
-      network: hasMediaDevices && hasRTCPeerConnection && isOnline
+      network: isOnline,
+      webrtc: hasMediaDevices && hasRTCPeerConnection
     }));
   }, []);
   
@@ -46,11 +56,79 @@ export function VideoChatGuide({ onClose }: { onClose: () => void }) {
       const hasVideo = stream.getVideoTracks().length > 0;
       const hasAudio = stream.getAudioTracks().length > 0;
       
-      setStatus({
+      // Logging device info
+      if (hasVideo) {
+        const videoTrack = stream.getVideoTracks()[0];
+        console.log('Video device:', videoTrack.label);
+        console.log('Video track settings:', videoTrack.getSettings());
+      }
+      
+      if (hasAudio) {
+        const audioTrack = stream.getAudioTracks()[0];
+        console.log('Audio device:', audioTrack.label);
+      }
+      
+      setStatus(prev => ({
+        ...prev,
         camera: hasVideo,
-        microphone: hasAudio,
-        network: status.network
-      });
+        microphone: hasAudio
+      }));
+      
+      // Additional WebRTC check
+      try {
+        // Create test peer connection
+        const pc1 = new RTCPeerConnection();
+        const pc2 = new RTCPeerConnection();
+        
+        // Add track to peer connection
+        stream.getTracks().forEach(track => {
+          pc1.addTrack(track, stream);
+        });
+        
+        // Create data channel as additional test
+        const dc = pc1.createDataChannel('test');
+        
+        // Handle ICE candidates
+        pc1.onicecandidate = (e) => {
+          if (e.candidate) {
+            pc2.addIceCandidate(e.candidate);
+          }
+        };
+        
+        pc2.onicecandidate = (e) => {
+          if (e.candidate) {
+            pc1.addIceCandidate(e.candidate);
+          }
+        };
+        
+        // Create and set offer
+        const offer = await pc1.createOffer();
+        await pc1.setLocalDescription(offer);
+        await pc2.setRemoteDescription(offer);
+        
+        // Create and set answer
+        const answer = await pc2.createAnswer();
+        await pc2.setLocalDescription(answer);
+        await pc1.setRemoteDescription(answer);
+        
+        // Clean up
+        setTimeout(() => {
+          pc1.close();
+          pc2.close();
+          console.log('WebRTC test connection closed');
+        }, 1000);
+        
+        setStatus(prev => ({
+          ...prev,
+          webrtc: true
+        }));
+      } catch (webrtcError) {
+        console.error('WebRTC connection test failed:', webrtcError);
+        setStatus(prev => ({
+          ...prev,
+          webrtc: false
+        }));
+      }
       
       // Stop tracks
       stream.getTracks().forEach(track => track.stop());
@@ -63,10 +141,12 @@ export function VideoChatGuide({ onClose }: { onClose: () => void }) {
         
         if (errorMessage.includes('video')) {
           setStatus(prev => ({ ...prev, camera: false }));
+          console.error('Izin kamera ditolak. Silakan izinkan akses kamera di pengaturan browser Anda.');
         }
         
         if (errorMessage.includes('audio') || errorMessage.includes('microphone')) {
           setStatus(prev => ({ ...prev, microphone: false }));
+          console.error('Izin mikrofon ditolak. Silakan izinkan akses mikrofon di pengaturan browser Anda.');
         }
       } else {
         // Generic error
@@ -75,6 +155,7 @@ export function VideoChatGuide({ onClose }: { onClose: () => void }) {
           camera: false,
           microphone: false
         }));
+        console.error('Gagal mengakses kamera dan mikrofon. Periksa pengaturan izin browser Anda.');
       }
     } finally {
       setChecking(false);
@@ -86,7 +167,47 @@ export function VideoChatGuide({ onClose }: { onClose: () => void }) {
     return isAvailable ? <FiCheck className="text-green-500" /> : <FiX className="text-red-500" />;
   };
   
-  const canUseVideoChat = status.camera && status.microphone && status.network;
+  const canUseVideoChat = status.camera && status.microphone && status.network && status.webrtc;
+
+  const handleStartCall = () => {
+    if (!canUseVideoChat) {
+      console.error('Perangkat belum siap untuk panggilan video. Silakan periksa status perangkat.');
+      return;
+    }
+    
+    if (!phoneNumber.trim()) {
+      console.error('Masukkan nomor telepon untuk melakukan panggilan.');
+      return;
+    }
+    
+    if (onStartVideoCall) {
+      onStartVideoCall(phoneNumber);
+    }
+    
+    onClose();
+  };
+  
+  const getDeviceInstructions = () => {
+    const instructions = [];
+    
+    if (status.camera === false) {
+      instructions.push('Izinkan akses kamera di pengaturan browser Anda');
+    }
+    
+    if (status.microphone === false) {
+      instructions.push('Izinkan akses mikrofon di pengaturan browser Anda');
+    }
+    
+    if (status.network === false) {
+      instructions.push('Periksa koneksi internet Anda');
+    }
+    
+    if (status.webrtc === false) {
+      instructions.push('Browser Anda mungkin tidak mendukung WebRTC. Gunakan browser modern seperti Chrome atau Firefox');
+    }
+    
+    return instructions;
+  };
 
   return (
     <div className="bg-white rounded-lg shadow-lg p-6 max-w-md w-full">
@@ -121,17 +242,40 @@ export function VideoChatGuide({ onClose }: { onClose: () => void }) {
           </div>
           {getStatusIcon(status.network)}
         </div>
+        
+        <div className="flex items-center justify-between p-3 bg-secondary-50 rounded-md">
+          <div className="flex items-center">
+            <FiCloudLightning className="mr-3 text-primary-600" />
+            <span>Dukungan WebRTC</span>
+          </div>
+          {getStatusIcon(status.webrtc)}
+        </div>
       </div>
+      
+      {onStartVideoCall && (
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-secondary-700 mb-1">
+            Nomor Telepon Tujuan
+          </label>
+          <input
+            type="tel"
+            className="w-full px-3 py-2 border border-secondary-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+            placeholder="Masukkan nomor telepon"
+            value={phoneNumber}
+            onChange={(e) => setPhoneNumber(e.target.value)}
+          />
+        </div>
+      )}
       
       <div className="space-y-4">
         {!canUseVideoChat && status.camera !== null && (
           <div className="p-3 bg-yellow-50 text-yellow-800 rounded-md text-sm">
-            <p>
-              {!status.camera && 'Kamera tidak tersedia atau izin ditolak. '}
-              {!status.microphone && 'Mikrofon tidak tersedia atau izin ditolak. '}
-              {!status.network && 'Koneksi internet atau dukungan WebRTC bermasalah. '}
-              Silakan periksa pengaturan browser Anda.
-            </p>
+            <p className="font-medium mb-1">Perangkat belum siap:</p>
+            <ul className="list-disc pl-5">
+              {getDeviceInstructions().map((instruction, index) => (
+                <li key={index}>{instruction}</li>
+              ))}
+            </ul>
           </div>
         )}
         
@@ -144,9 +288,18 @@ export function VideoChatGuide({ onClose }: { onClose: () => void }) {
             {checking ? 'Memeriksa...' : 'Periksa Perangkat'}
           </Button>
           
-          <Button onClick={onClose}>
-            {canUseVideoChat ? 'Mulai Panggilan Video' : 'Tutup'}
-          </Button>
+          {onStartVideoCall ? (
+            <Button 
+              onClick={handleStartCall}
+              disabled={!canUseVideoChat || !phoneNumber.trim() || checking}
+            >
+              Mulai Panggilan Video
+            </Button>
+          ) : (
+            <Button onClick={onClose}>
+              {canUseVideoChat ? 'Perangkat Siap' : 'Tutup'}
+            </Button>
+          )}
         </div>
       </div>
     </div>
